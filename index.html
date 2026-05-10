@@ -8,6 +8,19 @@
       content="GreenGrid - 3D-Echtzeit-Simulation eines dezentralen Energienetzes"
     />
     <title>GreenGrid Simulation</title>
+    <script>
+      (function () {
+        const path = window.location.pathname;
+        const lastSegment = path.split('/').pop();
+        const looksLikeFile = /\.[a-z0-9]+$/i.test(lastSegment || '');
+        if (!path.endsWith('/') && !looksLikeFile) {
+          const normalizedPath = `${path}/`;
+          const normalizedUrl = new URL(window.location.href);
+          normalizedUrl.pathname = normalizedPath;
+          window.location.replace(normalizedUrl.href);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
