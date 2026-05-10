@@ -272,6 +272,7 @@ export default function EnergyScene() {
       <TradeParticles
         trades={trades}
         housesById={housesById}
+  disableParticles={true}
       />
     </>
   );

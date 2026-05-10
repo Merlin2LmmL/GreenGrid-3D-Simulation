@@ -35,10 +35,9 @@ function ParticleTrail({ start, end, phase = 0 }) {
   );
 }
 
-export default function TradeParticles({ trades, housesById }) {
-  if (trades.length === 0) {
-    return null;
-  }
+export default function TradeParticles({ trades, housesById, disableParticles = false }) {
+  if (disableParticles) return null;
+  if (trades.length === 0) return null;
 
   return (
     <group>

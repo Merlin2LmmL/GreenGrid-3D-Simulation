@@ -5,7 +5,7 @@ import { getModelConfig } from '../config/houseModels';
 // We simulate one tick per second, and each tick represents 5 simulated minutes.
 const TICK_MS = 1000; // 1 second per tick in real time
 const SIM_MINUTES_PER_TICK = 5; // each tick represents 5 minutes of simulated time
-const TICK_HOURS = SIM_MINUTES_PER_TICK / 60; // hours represented per tick
+const TICK_HOURS = SIM_MINUTES_PER_TICK / 10; // hours represented per tick
 const SEED = 1;
 const MIN_HOUSES = 80;
 const MAX_HOUSES = 100;
@@ -14,7 +14,7 @@ const MIN_HOUSE_DISTANCE = 10.0;
 const STREET_SEGMENT_MIN = 10;
 const STREET_SEGMENT_MAX = 16;
 const HOUSE_ROAD_CLEARANCE = 3;
-const SOLAR_HOUSE_RATIO = 0.85;
+const SOLAR_HOUSE_RATIO = 0.65;
 // Number of ticks an order should cover (increases Wh per order so trades span multiple ticks)
 const ORDER_TICKS = 24;
 
@@ -495,15 +495,23 @@ const tickSimulation = (state) => {
     }
   }
 
-  const buyOrders = updatedHouses
-    .filter((house) => house.importW > 0)
-    .map((house) => ({
-      houseId: house.id,
-      // create orders covering multiple ticks so orders are not trivially tiny
-      energyWh: house.importW * TICK_HOURS * ORDER_TICKS,
-      powerW: house.importW,
-      status: 'open',
-    }));
+  // Gather existing open buy orders from previous tick
+const existingBuyMap = new Map();
+updatedHouses.forEach((h) => {
+  const open = (h.buyOrders || []).find((o) => o.remainingWh > 0);
+  if (open) existingBuyMap.set(h.id, open);
+});
+
+const buyOrders = updatedHouses
+  .filter((house) => house.importW > 0)
+  .filter((house) => !existingBuyMap.has(house.id))
+  .map((house) => ({
+    houseId: house.id,
+    // create orders covering multiple ticks so orders are not trivially tiny
+    energyWh: house.importW * TICK_HOURS * ORDER_TICKS,
+    powerW: house.importW,
+    status: 'open',
+  }));
 
   const sellOrders = updatedHouses
     .filter((house) => house.exportW > 0 && (house.production > house.consumption || (house.hasBattery && house.batteryLevel > 0)))
@@ -616,32 +624,11 @@ const tickSimulation = (state) => {
     }
   }
 
-  for (const house of houseMap.values()) {
-    if (house.importW > 0) {
-      const gridCost = (house.importW * TICK_HOURS / 1000) * marketPrice * 1.35;
-      house.cumulativeBalance -= gridCost;
-      house.balance -= gridCost;
-      gridRevenue += gridCost;
-    }
-
-    const houseBuyOrders = buyQueue
-      .filter((order) => order.houseId === house.id && order.remainingWh > 0)
-      .map((order) => ({
-        ...order,
-        status: 'open',
-      }));
-
-    const houseSellOrders = sellQueue
-      .filter((order) => order.houseId === house.id && order.remainingWh > 0)
-      .map((order) => ({
-        ...order,
-        status: 'open',
-      }));
-
-    house.buyOrders = houseBuyOrders;
-    house.sellOrders = houseSellOrders;
-  }
-
+  // Update houses with their open buy orders after matching
+  updatedHouses.forEach((house) => {
+    const remainingOrders = (house.buyOrders || []).filter((o) => o.remainingWh > 0);
+    house.buyOrders = remainingOrders;
+  });
   const houses = Array.from(houseMap.values());
   const totalBatteryDelta = houses.reduce((sum, h) => sum + ((h.batteryLevel || 0) - (prevBatteryLevels.get(h.id) || 0)), 0);
   const totalCumulativeBalance = houses.reduce((sum, house) => sum + house.cumulativeBalance, 0);

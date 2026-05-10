@@ -247,7 +247,7 @@ function HouseDetail({
       </group>
 
       {showLabel && (
-        <Billboard position={[0, 4.45, 0]} scale={labelScaleState}>
+        <Billboard position={[0, 4.45, 0]} scale={labelScaleState} renderOrder={-1}>
           <Html center distanceFactor={20} occlude={false} zIndexRange={[0, 0]} style={{ pointerEvents: 'none' }}>
             <div className="min-w-[170px] rounded-lg border border-cyan-200/30 bg-slate-900/85 p-2 text-[11px] text-cyan-50 shadow-xl">
               <div className="mb-1 font-semibold tracking-wide text-cyan-100">{house.name}</div>
