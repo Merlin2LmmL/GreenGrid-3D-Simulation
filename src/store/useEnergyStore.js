@@ -1,22 +1,82 @@
 import { create } from 'zustand';
 import { getModelConfig } from '../config/houseModels';
 
-// Real-time tick length (ms) and simulation mapping.
-// We simulate one tick per second, and each tick represents 5 simulated minutes.
-const TICK_MS = 1000; // 1 second per tick in real time
-const SIM_MINUTES_PER_TICK = 5; // each tick represents 5 minutes of simulated time
-const TICK_HOURS = SIM_MINUTES_PER_TICK / 10; // hours represented per tick
-const SEED = 1;
-const MIN_HOUSES = 80;
-const MAX_HOUSES = 100;
+// Initial constants (now used as defaults or range bases)
+const DEFAULT_TICK_MS = 200;
+const DEFAULT_SIM_MINUTES_PER_TICK = 5;
+const DEFAULT_SEED = 3;
+const DEFAULT_SOLAR_HOUSE_RATIO = 0.65;
+const DEFAULT_SOLAR_BATTERY_RATIO = 0.85;
+const DEFAULT_NO_SOLAR_BATTERY_RATIO = 0.25;
+
+const BASE_STREET_SEGMENT_MIN = 16;
+const BASE_STREET_SEGMENT_MAX = 20;
+const BASE_MIN_HOUSES = 30;
+const BASE_MAX_HOUSES = 60;
+
 const STREET_HALF_WIDTH = 2.4;
 const MIN_HOUSE_DISTANCE = 10.0;
-const STREET_SEGMENT_MIN = 10;
-const STREET_SEGMENT_MAX = 16;
 const HOUSE_ROAD_CLEARANCE = 3;
-const SOLAR_HOUSE_RATIO = 0.65;
-// Number of ticks an order should cover (increases Wh per order so trades span multiple ticks)
-const ORDER_TICKS = 24;
+
+// ── Trade system constants ────────────────────────────────────────────────────
+// Max concurrent buy-side trades a buyer may hold at once
+const MAX_ACTIVE_BUY_TRADES = 3;
+
+// Max concurrent sell-side trades a seller may commit to at once
+const MAX_SELL_TRADES = 4;
+
+// Battery level (% of capacity) the buyer tries to guarantee at sunrise
+const BATTERY_THRESHOLD_RATIO = 0.20;
+
+// How many simulated hours a seller can provide zero surplus before a trade is abolished
+const TRADE_MAX_IDLE_HOURS = 0.5;
+
+// How long (real ms) an unmatched buy order waits before being discarded
+// 8 ticks = ~2 sim hours
+const BUY_ORDER_EXPIRY_REAL_MS = DEFAULT_TICK_MS * 8;
+
+// Minimum gap (Wh) worth placing a buy order for
+const MIN_ORDER_WH = 80;
+
+// Minimum seller surplus (W) required to be considered eligible
+const MIN_SELLER_SURPLUS_W = 20;
+
+// Multiplier applied to order sizes so trades stay live long enough to show
+// meaningful progress in the UI
+const ORDER_VOLUME_MULTIPLIER = 3;
+
+// Average household baseline consumption in watts.
+// Center value around which individual household demand is symmetrically distributed.
+const AVG_BASE_CONSUMPTION = 2200;
+
+// Maximum deviation from average consumption in watts (± range).
+// Final load is uniformly shifted within [mean - divergence, mean + divergence].
+const AVG_BASE_CONSUMPTION_DIVERGENCE = 500;
+
+// Multiplicative scaling factor for peak PV output under ideal conditions.
+// Represents how much stronger solar generation is compared to baseline load.
+const AVG_PEAK_SOLAR_FACTOR = 5;
+
+// Symmetric variability applied to peak solar output (± factor).
+// Models differences in panel quality, orientation, and local shading conditions.
+const AVG_PEAK_SOLAR_DIVERGENCE_FACTOR = 1;
+
+// Battery capacity (kWh) for households equipped with solar.
+// Higher baseline reflects typical co-installation with PV systems.
+const AVG_BATTERY_CAPACITY_SOLAR = 40;
+
+// Maximum deviation in battery size for solar-equipped households (± kWh).
+// Produces a uniform range of [10, 15] kWh around the mean.
+const AVG_BATTERY_CAPACITY_SOLAR_DIVERGENCE = 3;
+
+// Battery capacity (kWh) for households without solar installations.
+// Lower baseline reflects retrofit or standalone storage systems.
+const AVG_BATTERY_CAPACITY_NON_SOLAR = 15;
+
+// Maximum deviation in battery size for non-solar households (± kWh).
+// Produces a uniform range of [8, 12] kWh around the mean.
+const AVG_BATTERY_CAPACITY_NON_SOLAR_DIVERGENCE = 2;
+
 
 // Seeded random for deterministic model selection
 const seededRandom = (seed) => {
@@ -73,10 +133,14 @@ const pointToSegmentDistance2D = (point, segmentStart, segmentEnd) => {
   return Math.hypot(point.x - px, point.z - pz);
 };
 
-const createGridCoordinates = (segmentCount, rng) => {
+const createGridCoordinates = (segmentCount, rng, settings) => {
+  const sizeScale = settings.citySize || 1.0;
+  const segMin = BASE_STREET_SEGMENT_MIN * sizeScale;
+  const segMax = BASE_STREET_SEGMENT_MAX * sizeScale;
+
   const segments = Array.from(
     { length: segmentCount },
-    () => STREET_SEGMENT_MIN + rng() * (STREET_SEGMENT_MAX - STREET_SEGMENT_MIN)
+    () => segMin + rng() * (segMax - segMin)
   );
   const total = segments.reduce((sum, value) => sum + value, 0);
   const origin = -total / 2;
@@ -91,14 +155,22 @@ const createGridCoordinates = (segmentCount, rng) => {
   return coords;
 };
 
-const createCityLayout = (seed) => {
+const createCityLayout = (settings) => {
+  const seed = settings.seed ?? DEFAULT_SEED;
   const rng = createRng(seed);
-  const houseCount = randomInt(rng, MIN_HOUSES, MAX_HOUSES);
-  const cols = randomInt(rng, 5, 7);
-  const rows = randomInt(rng, 5, 7);
 
-  const xCoords = createGridCoordinates(cols - 1, rng);
-  const zCoords = createGridCoordinates(rows - 1, rng);
+  const sizeScale = settings.citySize || 1.0;
+  const minH = Math.floor(BASE_MIN_HOUSES * sizeScale);
+  const maxH = Math.floor(BASE_MAX_HOUSES * sizeScale);
+  const houseCount = randomInt(rng, minH, maxH);
+
+  // Grid size also scales slightly with city size
+  const baseDim = Math.floor(5 + (sizeScale - 1) * 3);
+  const cols = randomInt(rng, baseDim, baseDim + 2);
+  const rows = randomInt(rng, baseDim, baseDim + 2);
+
+  const xCoords = createGridCoordinates(cols - 1, rng, settings);
+  const zCoords = createGridCoordinates(rows - 1, rng, settings);
 
   const toIndex = (row, col) => row * cols + col;
 
@@ -267,21 +339,27 @@ const createCityLayout = (seed) => {
     return chosen;
   };
 
-  let chosenLots = pickLotsWithSpacing(MIN_HOUSE_DISTANCE);
+  let chosenLots = pickLotsWithSpacing(MIN_HOUSE_DISTANCE * sizeScale);
 
   const houses = chosenLots.map((lot, index) => {
     const modelIndex = Math.floor(seededRandom(index + seed) * 6) + 1;
     const modelParams = getModelConfig(modelIndex);
-    const hasSolar = rng() < SOLAR_HOUSE_RATIO;
+    const hasSolar = rng() < (settings.solarRatio ?? DEFAULT_SOLAR_HOUSE_RATIO);
     const solarPanels = hasSolar ? modelParams.solarPanels : [];
-    
-    // 60% of solar homes and 20% of non-solar homes get batteries
-    const hasBattery = hasSolar ? rng() < 0.6 : rng() < 0.2;
-    
-    // Keep households in a realistic range, but make solar homes clearly net-positive at peak
-    const baseConsumption = 1800 + rng() * 1200; // 1800-3000W base load
-    const pvPeak = hasSolar ? baseConsumption * (2.4 + rng() * 0.9) : 0; // Peak solar is ~2.4-3.3x consumption
-    const batteryCapacity = hasBattery ? (hasSolar ? 10 + rng() * 5 : 8 + rng() * 4) : 0; // 10-15 kWh solar, 8-12 kWh non-solar
+
+    // Probability ratios from settings
+    const solarBatteryProb = settings.solarBatteryRatio ?? DEFAULT_SOLAR_BATTERY_RATIO;
+    const noSolarBatteryProb = settings.noSolarBatteryRatio ?? DEFAULT_NO_SOLAR_BATTERY_RATIO;
+
+    const hasBattery = hasSolar ? rng() < solarBatteryProb : rng() < noSolarBatteryProb;
+
+    const baseConsumption = AVG_BASE_CONSUMPTION + (rng() * 2 - 1) * AVG_BASE_CONSUMPTION_DIVERGENCE;
+    const pvPeak = hasSolar ? baseConsumption * (AVG_PEAK_SOLAR_FACTOR + (rng() * 2 - 1) * AVG_PEAK_SOLAR_DIVERGENCE_FACTOR) : 0;
+    const batteryCapacity = hasBattery
+      ? (hasSolar
+        ? AVG_BATTERY_CAPACITY_SOLAR + (rng() * 2 - 1) * AVG_BATTERY_CAPACITY_SOLAR_DIVERGENCE
+        : AVG_BATTERY_CAPACITY_NON_SOLAR + (rng() * 2 - 1) * AVG_BATTERY_CAPACITY_NON_SOLAR_DIVERGENCE)
+      : 0;
     const batteryLevel = hasBattery ? batteryCapacity * (hasSolar ? (0.3 + rng() * 0.4) : (0.55 + rng() * 0.25)) : 0; // Solar starts 30-70%, non-solar 55-80%
 
     return {
@@ -323,7 +401,16 @@ const createCityLayout = (seed) => {
   return { houses, roads };
 };
 
-const initialCity = createCityLayout(SEED);
+const INITIAL_SETTINGS = {
+  seed: DEFAULT_SEED,
+  citySize: 1.0,
+  solarRatio: DEFAULT_SOLAR_HOUSE_RATIO,
+  solarBatteryRatio: DEFAULT_SOLAR_BATTERY_RATIO,
+  noSolarBatteryRatio: DEFAULT_NO_SOLAR_BATTERY_RATIO,
+  maxWeatherIntensity: 1.0,
+};
+
+const initialCity = createCityLayout(INITIAL_SETTINGS);
 
 const dayLightFactor = (timeHours) => {
   // 06:00 bis 18:00 ist Tag. Davor und danach gibt es keine PV-Produktion.
@@ -365,65 +452,112 @@ const consumptionCurveFactor = (timeHours) => {
 };
 
 const pickMarketPrice = (gridDependency) => {
-  // Hohe Netzabhängigkeit treibt den Preis hoch.
-  const base = 0.18;
-  return base + gridDependency * 0.22;
+  // Base price is slightly higher to reward local production
+  const base = 0.22;
+  return base + gridDependency * 0.28;
 };
 
-const makeTrade = (seller, buyer, powerW, price) => ({
-  id: `${seller.id}-${buyer.id}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-  sellerId: seller.id,
-  buyerId: buyer.id,
-  powerW,
-  price,
-  createdAt: Date.now(),
-});
+// ── Hours until next sunrise (06:00) ─────────────────────────────────────────
+// Returns 0 during daytime (06:00–18:00) — buy trigger is night-only.
+const hoursUntilNextSunrise = (timeHours) => {
+  if (timeHours >= 6 && timeHours < 18) return 0; // daytime
+  if (timeHours >= 18) return 24 - timeHours + 6; // evening → next morning
+  return 6 - timeHours; // after midnight → this morning
+};
 
 const tickSimulation = (state) => {
-  const nextTime = (state.timeHours + 0.25) % 24;
+  const now = Date.now();
+  const tickHours = state.simMinutesPerTick / 60;
+  const nextTime = (state.timeHours + tickHours) % 24;
+  const daysPassed = state.timeHours + tickHours >= 24 ? 1 : 0;
+  const nextDayCount = (state.dayCount || 0) + daysPassed;
+
+  // ── Weather Logic ────────────────────────────────────────────────────────
+  let { weatherIntensity = 0, targetWeatherIntensity = 0 } = state;
+  const seed = state.mapSettings?.seed ?? DEFAULT_SEED;
+  const weatherSeed = seed + nextDayCount * 100 + Math.floor(nextTime * 10);
+  const weatherRng = createRng(weatherSeed);
+
+  // Change target weather much less frequently (e.g., 1.5% chance per tick)
+  if (weatherRng() < 0.015) {
+    const roll = weatherRng();
+    const maxWeather = state.mapSettings?.maxWeatherIntensity ?? 1.0;
+    targetWeatherIntensity = Math.floor(roll * 5) / 4 * maxWeather;
+  }
+
+  // Smoothly interpolate current intensity towards target
+  // Gradual shift (0.02 units per tick) prevents abrupt jumps in lighting or production
+  if (Math.abs(weatherIntensity - targetWeatherIntensity) > 0.005) {
+    const delta = targetWeatherIntensity > weatherIntensity ? 0.02 : -0.02;
+    weatherIntensity = clamp(weatherIntensity + delta, 0, 1);
+  } else {
+    weatherIntensity = targetWeatherIntensity;
+  }
+
+  // Less aggressive weather factor: Rain (1.0) now only reduces production to 55% (was 15%)
+  const weatherFactor = 1.0 - (weatherIntensity * 0.45);
+
+  // ── Enhanced Solar Noise Logic ──────────────────────────────────────────
+  const globalT = nextTime + nextDayCount * 24;
+  // Multi-frequency noise to break the obvious sinus pattern of the daily cycle.
+  // Combines three octaves: slow drift (8h), medium patches (2h), and faster shifts (30m).
+  const atmosphericNoise =
+    0.88 +
+    Math.sin(globalT * 0.4) * 0.12 +
+    Math.sin(globalT * 1.5) * 0.08 +
+    Math.sin(globalT * 4.0) * 0.04;
+
   const daylight = dayLightFactor(nextTime);
   const consumptionFactor = consumptionCurveFactor(nextTime);
+
+  // ── Step 1: Update house physics ──────────────────────────────────────────
+  const prevBatteryLevels = new Map((state.houses || []).map((h) => [h.id, h.batteryLevel || 0]));
+
+  const rng = createRng(seed + Math.floor(state.timeHours * 100));
+
   const updatedHouses = state.houses.map((house) => {
-    const demandNoise = 0.92 + Math.random() * 0.18;
-    const solarNoise = 0.88 + Math.random() * 0.24;
+    const demandNoise = 0.85 + rng() * 0.3;
+    // Increased local solar noise (panel-specific jitter)
+    const localSolarNoise = 0.7 + rng() * 0.6;
     const isDaytime = daylight > 0;
 
     const consumption = house.baseConsumption * consumptionFactor * demandNoise;
-    const production = house.pvPeak * daylight * solarNoise;
-    const netKWh = (production - consumption) * TICK_HOURS / 1000;
+    // Combine base curve with global atmospheric drift and local jitter
+    const production = house.pvPeak * daylight * localSolarNoise * atmosphericNoise * 1.5 * weatherFactor;
+    const netKWh = (production - consumption) * tickHours / 1000;
 
     let batteryLevel = house.batteryLevel;
     let exportKWh = 0;
     let importKWh = 0;
 
     const reserveKWh = house.hasBattery
-      ? (() => {
-          const hoursUntilMorning = nextTime < 6 ? 6 - nextTime : nextTime >= 18 ? 24 - nextTime + 6 : 0;
-          return hoursUntilMorning > 0 ? (house.baseConsumption * hoursUntilMorning) / 1000 : 0;
-        })()
+      ? house.batteryCapacity * BATTERY_THRESHOLD_RATIO
       : 0;
 
-    // Battery-only homes try to charge during the day when prices are low.
-    // Use a modest charging power so the charge is visible over multiple ticks.
-    const daytimeChargeW = !house.hasSolar && house.hasBattery && isDaytime
-      ? Math.min(1200, 450 + house.baseConsumption * 0.22)
-      : 0;
+    // Battery-only homes try to charge during the day when prices are low,
+    // but only when the battery still has headroom.
+    const daytimeChargeNeeded = house.batteryCapacity - batteryLevel;
+    const daytimeChargeW =
+      !house.hasSolar && house.hasBattery && isDaytime && daytimeChargeNeeded > 0.001
+        ? Math.min(1200, 450 + house.baseConsumption * 0.22)
+        : 0;
+
+    // PRE-BATTERY CALCULATION for trade readiness:
+    // We store the "gross" grid need before battery discharge so Step 2 (Trades)
+    // can fulfill this need with P2P energy instead of draining the battery.
+    const grossImportKWh = netKWh < 0 ? Math.abs(netKWh) : 0;
 
     if (netKWh >= 0) {
-      // surplus: charge battery first, then export surplus
+      // Surplus: fill battery to 100% first, then export the remainder.
       const chargeKWh = Math.min(house.batteryCapacity - batteryLevel, netKWh);
       batteryLevel += chargeKWh;
       exportKWh = netKWh - chargeKWh;
-
-      // allow selling stored energy only up to the current surplus and only above reserve
-      if (house.hasBattery && house.hasSolar && exportKWh > 0 && batteryLevel > reserveKWh) {
-        const sellable = Math.min(batteryLevel - reserveKWh, exportKWh);
-        exportKWh += sellable;
-        batteryLevel -= sellable;
-      }
+      importKWh = 0;
     } else {
-      // deficit: discharge battery to cover demand, otherwise import from grid
+      // Deficit: discharge battery to cover demand, then import the rest
       const demandKWh = Math.abs(netKWh);
+      // Only use battery for what TRADES cannot cover? No, let's keep it simple:
+      // Discharge battery, but Step 2 will let Trades "refund" this or replace the import.
       const dischargeKWh = Math.min(batteryLevel - reserveKWh, demandKWh);
       const dischargeEffective = Math.max(0, dischargeKWh);
       batteryLevel -= dischargeEffective;
@@ -431,18 +565,40 @@ const tickSimulation = (state) => {
     }
 
     if (daytimeChargeW > 0) {
-      const daytimeChargeKWh = (daytimeChargeW * TICK_HOURS) / 1000;
+      const daytimeChargeKWh = (daytimeChargeW * tickHours) / 1000;
       importKWh += daytimeChargeKWh;
       batteryLevel = Math.min(house.batteryCapacity, batteryLevel + daytimeChargeKWh);
     }
+
+    const pvSurplusW = (exportKWh * 1000) / tickHours;
+
+    // Battery selling logic: identify spare power while keeping enough for the night
+    const hoursToMorning = hoursUntilNextSunrise(nextTime);
+    const estimatedNightlyNeedWh = house.hasBattery
+      ? house.baseConsumption * 0.7 * hoursToMorning
+      : 0;
+
+    // Be more aggressive if battery is full
+    const isFull = batteryLevel >= house.batteryCapacity * 0.95;
+    const safetyReserveWh = house.batteryCapacity * 1000 * (isFull ? 0.1 : BATTERY_THRESHOLD_RATIO);
+
+    const batterySpareWh = house.hasBattery
+      ? Math.max(0, (batteryLevel * 1000) - (estimatedNightlyNeedWh * 0.8) - safetyReserveWh)
+      : 0;
+
+    const batterySpareW = Math.min(5000, batterySpareWh / tickHours);
+    const totalExportW = pvSurplusW + batterySpareW;
 
     return {
       ...house,
       consumption,
       production,
       batteryLevel: clamp(batteryLevel, 0, house.batteryCapacity),
-      importW: (importKWh * 1000) / TICK_HOURS,
-      exportW: (exportKWh * 1000) / TICK_HOURS,
+      importW: (importKWh * 1000) / tickHours,
+      grossImportW: (grossImportKWh * 1000) / tickHours, // Store for Step 2
+      exportW: totalExportW,
+      pvSurplusW,
+      // buyOrders / sellOrders are rebuilt from scratch each tick (see Step 7)
       buyOrders: [],
       sellOrders: [],
     };
@@ -451,189 +607,334 @@ const tickSimulation = (state) => {
   const totalDemand = updatedHouses.reduce((sum, h) => sum + h.consumption, 0);
   const totalProduction = updatedHouses.reduce((sum, h) => sum + h.production, 0);
 
-  const houseMap = new Map(updatedHouses.map((house) => [house.id, { ...house }]));
+  // Working mutable copies so trade delivery can reduce importW / exportW
+  const houseMap = new Map(updatedHouses.map((h) => [h.id, { ...h }]));
+
+  // ── Step 2: Process active trades ─────────────────────────────────────────
+  // Count how many buyers each seller is committed to (for pro-rata split)
+  const sellerBuyerCount = new Map();
+  for (const trade of (state.trades || [])) {
+    sellerBuyerCount.set(
+      trade.sellerId,
+      (sellerBuyerCount.get(trade.sellerId) || 0) + 1,
+    );
+  }
+
+  const buyerTradeCount = new Map(); // active trades per buyer after this tick
+  const sellerTradeCount = new Map(); // active trades per seller after this tick
   const nextTrades = [];
+
+  // Pre-calculate seller shares to avoid pro-rata degradation inside the loop
+  const sellerSurplusPool = new Map(updatedHouses.map(h => [h.id, h.exportW]));
+
   const settlements = [];
   let localTradeWh = 0;
-  // track money settled via peer-to-peer trades this tick
   let settledMoney = 0;
-  // track battery level changes for diagnostics
-  const prevBatteryLevels = new Map((state.houses || []).map((h) => [h.id, h.batteryLevel || 0]));
 
-  const activeTrades = (state.trades || []).filter((trade) => trade.status === 'ongoing');
-
-  for (const trade of activeTrades) {
+  for (const trade of (state.trades || [])) {
     const seller = houseMap.get(trade.sellerId);
     const buyer = houseMap.get(trade.buyerId);
 
-    if (!seller || !buyer) {
+    if (!seller || !buyer) continue;
+
+    // ── Buyer cancellation ──────────────────────────────────────────────────
+    const hoursToMorning = hoursUntilNextSunrise(nextTime);
+    if (buyer.hasBattery && hoursToMorning > 0) {
+      const thresholdWh = buyer.batteryCapacity * BATTERY_THRESHOLD_RATIO * 1000;
+      const projectedWh = buyer.batteryLevel * 1000 - buyer.baseConsumption * hoursToMorning;
+      // Much more relaxed: only cancel if we have DOUBLE the needed buffer
+      if (projectedWh >= thresholdWh * 2.5) continue;
+    } else if (!buyer.hasBattery && buyer.consumption <= 0) {
       continue;
     }
 
-    const plannedWh = (trade.rateW || 0) * TICK_HOURS;
-    const sellerAvailableWh = Math.max(0, seller.exportW * TICK_HOURS);
-    const buyerNeedWh = Math.max(0, buyer.importW * TICK_HOURS);
-    const transferableWh = Math.min(plannedWh, trade.remainingWh ?? plannedWh, sellerAvailableWh, buyerNeedWh);
+    // ── Seller surplus check ────────────────────────────────────────────────
+    // Greedy pool approach: each trade tries to take what it needs from the remaining pool
+    const availablePoolW = sellerSurplusPool.get(trade.sellerId) || 0;
 
-    if (transferableWh > 0) {
-      const transferRateW = transferableWh / TICK_HOURS;
-      seller.exportW = Math.max(0, seller.exportW - transferRateW);
-      buyer.importW = Math.max(0, buyer.importW - transferRateW);
-      trade.tickTransferWh = transferableWh;
-      trade.transferredWh = (trade.transferredWh || 0) + transferableWh;
-      trade.remainingWh = Math.max(0, (trade.remainingWh ?? 0) - transferableWh);
-      localTradeWh += transferableWh;
+    // Delivery: Buyers with active trades use grossImportW (before battery) to ensure trade progress
+    const buyerNeedW = buyer.hasBattery ? buyer.grossImportW : buyer.importW;
+    const deliveryW = Math.max(0, Math.min(availablePoolW, buyerNeedW));
+    const maxFromTrade = trade.remainingWh / tickHours;
+    const actualDeliveryW = Math.min(deliveryW, maxFromTrade);
+    const actualDeliveryWh = actualDeliveryW * tickHours;
+
+    // ── Idle logic: Discard trades that don't transfer energy for a while ─────
+    let idleTicks = trade.idleTicks || 0;
+    if (actualDeliveryWh <= 0.001) {
+      idleTicks += 1;
     } else {
-      trade.tickTransferWh = 0;
+      idleTicks = 0;
     }
 
-    trade.status = (trade.remainingWh ?? 0) > 0 ? 'ongoing' : 'completed';
-    trade.price = trade.price ?? 0;
-
-    if (trade.status === 'ongoing') {
-      nextTrades.push(trade);
-    }
-  }
-
-  // Gather existing open buy orders from previous tick
-const existingBuyMap = new Map();
-updatedHouses.forEach((h) => {
-  const open = (h.buyOrders || []).find((o) => o.remainingWh > 0);
-  if (open) existingBuyMap.set(h.id, open);
-});
-
-const buyOrders = updatedHouses
-  .filter((house) => house.importW > 0)
-  .filter((house) => !existingBuyMap.has(house.id))
-  .map((house) => ({
-    houseId: house.id,
-    // create orders covering multiple ticks so orders are not trivially tiny
-    energyWh: house.importW * TICK_HOURS * ORDER_TICKS,
-    powerW: house.importW,
-    status: 'open',
-  }));
-
-  const sellOrders = updatedHouses
-    .filter((house) => house.exportW > 0 && (house.production > house.consumption || (house.hasBattery && house.batteryLevel > 0)))
-    .map((house) => ({
-      houseId: house.id,
-      // sellers offer a multi-tick amount as well
-      energyWh: house.exportW * TICK_HOURS * ORDER_TICKS,
-      powerW: house.exportW,
-      status: 'open',
-    }));
-
-  const buyQueue = buyOrders.map((order) => ({ ...order, remainingWh: order.energyWh }));
-  const sellQueue = sellOrders.map((order) => ({ ...order, remainingWh: order.energyWh }));
-
-  for (const buyerOrder of buyQueue) {
-    for (const sellerOrder of sellQueue) {
-      if (buyerOrder.remainingWh <= 0) {
-        break;
-      }
-      if (sellerOrder.remainingWh <= 0) {
-        continue;
-      }
-
-      const matchedWh = Math.min(buyerOrder.remainingWh, sellerOrder.remainingWh);
-      if (matchedWh <= 0) {
-        continue;
-      }
-
-      const buyer = houseMap.get(buyerOrder.houseId);
-      const seller = houseMap.get(sellerOrder.houseId);
-      if (!buyer || !seller) {
-        continue;
-      }
-
-      const targetRateW = matchedWh / (TICK_HOURS * 4);
-      const tradeRateW = Math.max(75, Math.min(buyerOrder.powerW, sellerOrder.powerW, targetRateW));
-      const initialTransferWh = Math.min(tradeRateW * TICK_HOURS, matchedWh);
-
-      const trade = {
-        id: `trade-${seller.id}-${buyer.id}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        sellerId: seller.id,
-        buyerId: buyer.id,
-        rateW: tradeRateW,
-        remainingWh: matchedWh - initialTransferWh,
-        transferredWh: initialTransferWh,
-        tickTransferWh: initialTransferWh,
-        price: 0,
-        status: matchedWh - initialTransferWh > 0 ? 'ongoing' : 'completed',
-        createdAt: Date.now(),
-      };
-
-      buyerOrder.remainingWh -= matchedWh;
-      sellerOrder.remainingWh -= matchedWh;
-      localTradeWh += initialTransferWh;
-      settlements.push({ sellerId: seller.id, buyerId: buyer.id, transferWh: initialTransferWh });
-
-      seller.exportW = Math.max(0, seller.exportW - tradeRateW);
-      buyer.importW = Math.max(0, buyer.importW - tradeRateW);
-
-      if (trade.status === 'ongoing') {
-        nextTrades.push(trade);
-      }
-    }
-  }
-
-  const totalLocalTrade = localTradeWh / TICK_HOURS;
-  // Use post-match importW values from houseMap so market price reflects matched trades
-  const totalGridImport = Math.max(0, Array.from(houseMap.values()).reduce((sum, h) => sum + (h.importW || 0), 0));
-  const gridDependency = totalDemand > 0 ? totalGridImport / totalDemand : 0;
-  const marketPrice = pickMarketPrice(gridDependency);
-
-  // Track how much money the external grid collects this tick (for diagnostics).
-  let gridRevenue = 0;
-
-  for (const trade of activeTrades) {
-    if ((trade.tickTransferWh || 0) <= 0) {
+    const maxIdleTicks = Math.ceil(TRADE_MAX_IDLE_HOURS / tickHours);
+    if (idleTicks >= maxIdleTicks) {
       continue;
     }
 
-    settlements.push({
-      sellerId: trade.sellerId,
-      buyerId: trade.buyerId,
-      transferWh: trade.tickTransferWh,
+    if (actualDeliveryWh > 0.001) {
+      // If delivery exceeds what PV alone could provide, take the rest from the battery
+      const pvDeliveryW = Math.min(actualDeliveryW, seller.pvSurplusW || 0);
+      const batteryDeliveryW = Math.max(0, actualDeliveryW - pvDeliveryW);
+
+      if (batteryDeliveryW > 0.001) {
+        const batteryDeliveryWh = batteryDeliveryW * tickHours;
+        seller.batteryLevel = Math.max(0, seller.batteryLevel - (batteryDeliveryWh / 1000));
+      }
+
+      // Reduce seller's available pool and buyer's grid import need
+      sellerSurplusPool.set(trade.sellerId, Math.max(0, availablePoolW - actualDeliveryW));
+      buyer.importW = Math.max(0, buyer.importW - actualDeliveryW);
+      buyer.grossImportW = Math.max(0, (buyer.grossImportW || 0) - actualDeliveryW);
+      localTradeWh += actualDeliveryWh;
+
+      settlements.push({
+        sellerId: trade.sellerId,
+        buyerId: trade.buyerId,
+        transferWh: actualDeliveryWh,
+        pricePerKWh: trade.pricePerKWh,
+      });
+    }
+
+    const newRemaining = trade.remainingWh - actualDeliveryWh;
+    if (newRemaining <= 0.001) continue; // fulfilled → delete trade
+
+    // Trade survives into next tick
+    const updatedTrade = {
+      ...trade,
+      remainingWh: newRemaining,
+      lastDeliveryW: actualDeliveryW, // for dashboard display
+      idleTicks,
+    };
+    nextTrades.push(updatedTrade);
+    buyerTradeCount.set(trade.buyerId, (buyerTradeCount.get(trade.buyerId) || 0) + 1);
+    sellerTradeCount.set(trade.sellerId, (sellerTradeCount.get(trade.sellerId) || 0) + 1);
+  }
+
+  // ── Step 3: Filter stale open buy orders ──────────────────────────────────
+  const survivingOpenOrders = (state.openBuyOrders || []).filter((order) => {
+    if (now >= order.expiresAt) return false; // real-time expiry
+    const buyer = houseMap.get(order.buyerId);
+    if (!buyer) return false;
+
+    // Cancel if buyer no longer needs energy (conditions improved)
+    const hoursToMorning = hoursUntilNextSunrise(nextTime);
+    if (hoursToMorning <= 0 && buyer.hasBattery) return false; // daytime — not needed for battery houses
+    if (buyer.hasBattery) {
+      const thresholdWh = buyer.batteryCapacity * BATTERY_THRESHOLD_RATIO * 1000;
+      const projectedWh = buyer.batteryLevel * 1000 - buyer.baseConsumption * hoursToMorning;
+      if (projectedWh >= thresholdWh * 1.5) return false;
+    } else {
+      // Non-battery house: keep order alive while they're still importing from grid
+      if (buyer.importW <= 0) return false;
+    }
+
+    return true;
+  });
+
+  // ── Step 4: Generate new buy orders ──────────────────────────────────────
+  // A house places a buy order when:
+  //   • It has a battery
+  //   • It's nighttime (sun is down or setting)
+  //   • Projected battery at sunrise < threshold
+  //   • It doesn't already have a pending order or enough active trades
+  const openBuyOrders = [...survivingOpenOrders];
+
+  for (const house of houseMap.values()) {
+    if ((buyerTradeCount.get(house.id) || 0) >= MAX_ACTIVE_BUY_TRADES) continue;
+    if (openBuyOrders.some((o) => o.buyerId === house.id)) continue;
+
+    const approxGridDep = totalDemand > 0
+      ? updatedHouses.reduce((s, h) => s + h.importW, 0) / totalDemand
+      : 0.5;
+    const lockedPricePerKWh = pickMarketPrice(approxGridDep);
+
+    if (house.hasBattery) {
+      // Battery houses: buy at night when projected battery will fall below threshold.
+      // Order is scaled up so the trade lives long enough to show meaningful progress.
+      const hoursToMorning = hoursUntilNextSunrise(nextTime);
+      if (hoursToMorning <= 0) continue; // daytime, no need to plan
+
+      const thresholdWh = house.batteryCapacity * BATTERY_THRESHOLD_RATIO * 1000;
+      const projectedWh = house.batteryLevel * 1000 - house.baseConsumption * hoursToMorning;
+
+      if (projectedWh >= thresholdWh) continue; // sufficient
+
+      const gapWh = (thresholdWh - projectedWh) * ORDER_VOLUME_MULTIPLIER;
+      if (gapWh < MIN_ORDER_WH) continue;
+
+      openBuyOrders.push({
+        id: `buyorder-${house.id}-${now}-${Math.random().toString(16).slice(2)}`,
+        buyerId: house.id,
+        energyWh: gapWh,
+        pricePerKWh: lockedPricePerKWh,
+        createdAt: now,
+        expiresAt: now + BUY_ORDER_EXPIRY_REAL_MS,
+      });
+    } else {
+      // Non-battery houses: buy whenever they're importing from the grid.
+      // Scale up the order so the trade covers ~ORDER_VOLUME_MULTIPLIER ticks worth
+      // of import, giving the progress bar something meaningful to display.
+      const importWh = house.importW * tickHours * ORDER_VOLUME_MULTIPLIER;
+      if (importWh < MIN_ORDER_WH) continue;
+
+      openBuyOrders.push({
+        id: `buyorder-${house.id}-${now}-${Math.random().toString(16).slice(2)}`,
+        buyerId: house.id,
+        energyWh: importWh,
+        pricePerKWh: lockedPricePerKWh,
+        createdAt: now,
+        expiresAt: now + BUY_ORDER_EXPIRY_REAL_MS,
+      });
+    }
+  }
+
+  // ── Step 5: Match open buy orders to sellers ──────────────────────────────
+  const matchedOrderIds = new Set();
+
+  for (const order of openBuyOrders) {
+    const currentBuyerTrades = buyerTradeCount.get(order.buyerId) || 0;
+    if (currentBuyerTrades >= MAX_ACTIVE_BUY_TRADES) continue;
+
+    // Eligible sellers: must have real surplus OR spare battery beyond 2× own nightly need
+    const hoursToMorning = hoursUntilNextSunrise(nextTime);
+    const eligibleSellers = Array.from(houseMap.values())
+      .filter((seller) => {
+        if (seller.id === order.buyerId) return false;
+        if ((sellerTradeCount.get(seller.id) || 0) >= MAX_SELL_TRADES) return false;
+
+        const hasSurplus = seller.exportW >= MIN_SELLER_SURPLUS_W;
+        const ownNightlyNeedWh = seller.hasBattery
+          ? seller.baseConsumption * hoursToMorning
+          : 0;
+        const thresholdWh = seller.batteryCapacity * BATTERY_THRESHOLD_RATIO * 1000;
+        const hasSpareStorage =
+          seller.hasBattery &&
+          seller.batteryLevel * 1000 > ownNightlyNeedWh + thresholdWh;
+
+        return hasSurplus || hasSpareStorage;
+      })
+    if (eligibleSellers.length === 0) continue; // no match this tick
+
+    // Fair distribution: Pick a random seller from the top 5 candidates
+    // (instead of always picking the absolute highest producer)
+    const topCandidates = eligibleSellers.slice(0, 5);
+    const seller = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+
+    nextTrades.push({
+      id: `trade-${seller.id}-${order.buyerId}-${now}-${Math.random().toString(16).slice(2)}`,
+      sellerId: seller.id,
+      buyerId: order.buyerId,
+      totalWh: order.energyWh,
+      remainingWh: order.energyWh,
+      pricePerKWh: order.pricePerKWh, // €/kWh, locked from the buy order
+      lastDeliveryW: 0,
+      idleTicks: 0,
     });
 
-    trade.price = marketPrice;
+    buyerTradeCount.set(order.buyerId, (buyerTradeCount.get(order.buyerId) || 0) + 1);
+    sellerTradeCount.set(seller.id, (sellerTradeCount.get(seller.id) || 0) + 1);
+
+    // Also update sellerBuyerCount so subsequent matches in the same loop
+    // see the correct pro-rata denominator (though deliveries are next tick)
+    sellerBuyerCount.set(seller.id, (sellerBuyerCount.get(seller.id) || 0) + 1);
+
+    matchedOrderIds.add(order.id);
   }
 
-  for (const trade of nextTrades) {
-    trade.price = marketPrice;
-  }
+  // Orders that were matched are consumed; the rest persist to next tick
+  const remainingOpenOrders = openBuyOrders.filter((o) => !matchedOrderIds.has(o.id));
 
+  // ── Step 6: Settle payments and grid costs ────────────────────────────────
+  const totalGridImportW = Math.max(
+    0,
+    Array.from(houseMap.values()).reduce((s, h) => s + (h.importW || 0), 0),
+  );
+  const gridDependency = totalDemand > 0 ? totalGridImportW / totalDemand : 0;
+  const marketPrice = pickMarketPrice(gridDependency);
+
+  // P2P settlements (pay the locked price per trade, not market price)
   for (const settlement of settlements) {
-    const energyKWh = settlement.transferWh / 1000;
     const seller = houseMap.get(settlement.sellerId);
     const buyer = houseMap.get(settlement.buyerId);
+    const energyKWh = settlement.transferWh / 1000;
+    const pricePerKWh = settlement.pricePerKWh ?? marketPrice;
+    const value = energyKWh * pricePerKWh;
 
     if (seller) {
-      const sellerRevenue = energyKWh * marketPrice;
-      seller.cumulativeBalance += sellerRevenue;
-      seller.balance += sellerRevenue;
-      settledMoney += sellerRevenue;
+      seller.cumulativeBalance += value;
+      seller.balance = (seller.balance || 0) + value;
+      settledMoney += value;
     }
-
     if (buyer) {
-      const buyerCost = energyKWh * marketPrice;
-      buyer.cumulativeBalance -= buyerCost;
-      buyer.balance -= buyerCost;
-      settledMoney -= buyerCost;
+      buyer.cumulativeBalance -= value;
+      buyer.balance = (buyer.balance || 0) - value;
+      settledMoney -= value;
     }
   }
 
-  // Update houses with their open buy orders after matching
-  updatedHouses.forEach((house) => {
-    const remainingOrders = (house.buyOrders || []).filter((o) => o.remainingWh > 0);
-    house.buyOrders = remainingOrders;
-  });
+  // Grid costs for energy still imported from the grid (at live market price)
+  let gridRevenue = 0;
+  for (const house of houseMap.values()) {
+    if (house.importW > 0) {
+      const gridKWh = (house.importW * tickHours) / 1000;
+      const cost = gridKWh * marketPrice;
+      house.cumulativeBalance -= cost;
+      house.balance = (house.balance || 0) - cost;
+      gridRevenue += cost;
+    }
+  }
+
+  // Grid income for energy exported to the grid (feed-in tariff)
+  // This ensures solar houses get paid even if their surplus wasn't matched with a P2P trade.
+  const feedInTariff = marketPrice * 0.65; // Grid pays ~65% of current market price
+  for (const house of houseMap.values()) {
+    if (house.exportW > 0) {
+      const gridKWh = (house.exportW * tickHours) / 1000;
+      const income = gridKWh * feedInTariff;
+      house.cumulativeBalance += income;
+      house.balance = (house.balance || 0) + income;
+    }
+  }
+
+
+  // ── Step 7: Rebuild buyOrders / sellOrders for dashboard + label display ──────────
+  // Both arrays now reflect *active matched trades* so labels and dashboard can show
+  // kWh delivered, kWh total, trading partner, and locked price.
   const houses = Array.from(houseMap.values());
-  const totalBatteryDelta = houses.reduce((sum, h) => sum + ((h.batteryLevel || 0) - (prevBatteryLevels.get(h.id) || 0)), 0);
-  const totalCumulativeBalance = houses.reduce((sum, house) => sum + house.cumulativeBalance, 0);
+  houses.forEach((house) => {
+    house.buyOrders = nextTrades
+      .filter((t) => t.buyerId === house.id)
+      .map((t) => ({
+        totalWh: t.totalWh,
+        remainingWh: t.remainingWh,
+        usedWh: t.totalWh - t.remainingWh,
+        sellerId: t.sellerId,
+        pricePerKWh: t.pricePerKWh,
+      }));
+    house.sellOrders = nextTrades
+      .filter((t) => t.sellerId === house.id)
+      .map((t) => ({
+        totalWh: t.totalWh,
+        remainingWh: t.remainingWh,
+        usedWh: t.totalWh - t.remainingWh,
+        buyerId: t.buyerId,
+        pricePerKWh: t.pricePerKWh,
+      }));
+  });
+
+  // ── Step 8: History and totals ────────────────────────────────────────────
+  const totalLocalTrade = localTradeWh / tickHours;
+  const totalBatteryDelta = houses.reduce(
+    (s, h) => s + ((h.batteryLevel || 0) - (prevBatteryLevels.get(h.id) || 0)),
+    0,
+  );
+  const totalCumulativeBalance = houses.reduce((s, h) => s + h.cumulativeBalance, 0);
+
+  const elapsedHours = nextDayCount * 24 + nextTime;
   const nextHistoryEntry = {
     timeHours: nextTime,
+    elapsedHours,
     totalCumulativeBalance,
     demandW: totalDemand,
     productionW: totalProduction,
@@ -647,8 +948,9 @@ const buyOrders = updatedHouses
   return {
     houses,
     trades: nextTrades,
+    openBuyOrders: remainingOpenOrders,
     timeHours: nextTime,
-    history: [...(state.history || []).slice(-47), nextHistoryEntry],
+    history: [...(state.history || []).slice(-3000), nextHistoryEntry],
     totals: {
       demandW: totalDemand,
       productionW: totalProduction,
@@ -659,6 +961,10 @@ const buyOrders = updatedHouses
       settledMoney,
       totalBatteryDelta,
     },
+    weatherIntensity,
+    targetWeatherIntensity,
+    weatherFactor,
+    dayCount: nextDayCount,
   };
 };
 
@@ -674,10 +980,10 @@ export const useEnergyStore = create((set, get) => ({
   // When debugging, hide labels by default; toggle with `H` to reveal
   showHouseLabels: true,
 
-  seed: SEED,
   houses: initialCity.houses,
   roads: initialCity.roads,
   trades: [],
+  openBuyOrders: [],
   history: [],
   timeHours: 7,
   totals: {
@@ -687,9 +993,20 @@ export const useEnergyStore = create((set, get) => ({
     gridDependency: 0,
     marketPrice: 0.18,
   },
-  tickMs: TICK_MS,
+  weatherIntensity: 0,
+  targetWeatherIntensity: 0,
+  weatherFactor: 1.0,
+  dayCount: 0,
+  tickMs: DEFAULT_TICK_MS,
+  simMinutesPerTick: DEFAULT_SIM_MINUTES_PER_TICK,
+  historySpan: 2, // Default view window for graphs (hours)
+  isPaused: false,
+  labelScale: 1.0,
+
+  mapSettings: INITIAL_SETTINGS,
 
   tick: () => {
+    if (get().isPaused) return;
     set((state) => tickSimulation(state));
   },
 
@@ -700,34 +1017,55 @@ export const useEnergyStore = create((set, get) => ({
   },
 
   reset: () => {
-    const city = createCityLayout(get().seed);
+    const city = createCityLayout(get().mapSettings);
     set({
       houses: city.houses,
       roads: city.roads,
       trades: [],
+      openBuyOrders: [],
       history: [],
       timeHours: 7,
+      dayCount: 0,
     });
     get().tick();
   },
 
   setSeed: (seed) => {
     const numericSeed = Number(seed);
-    if (!Number.isFinite(numericSeed)) {
-      return;
-    }
+    if (!Number.isFinite(numericSeed)) return;
+    get().updateMapSettings({ seed: numericSeed });
+  },
 
-    const city = createCityLayout(numericSeed);
-    set({
-      seed: numericSeed,
-      houses: city.houses,
-      roads: city.roads,
-      trades: [],
-      history: [],
-      timeHours: 7,
+  getClockLabel: () => formatClock(get().timeHours),
+
+  setTickMs: (val) => set({ tickMs: val }),
+  setSimMinutesPerTick: (val) => set({ simMinutesPerTick: val }),
+  setHistorySpan: (val) => set({ historySpan: val }),
+  setLabelScale: (val) => set({ labelScale: val }),
+  togglePaused: () => set((s) => ({ isPaused: !s.isPaused })),
+  toggleDebug: () => set((s) => ({ DEBUG: !s.DEBUG })),
+
+  updateMapSettings: (newSettings) => {
+    set((state) => {
+      const updatedSettings = { ...state.mapSettings, ...newSettings };
+      const city = createCityLayout(updatedSettings);
+      return {
+        mapSettings: updatedSettings,
+        houses: city.houses,
+        roads: city.roads,
+        trades: [],
+        openBuyOrders: [],
+        history: [],
+        timeHours: 7,
+        dayCount: 0,
+      };
     });
     get().tick();
   },
 
-  getClockLabel: () => formatClock(get().timeHours),
+  getAverageStreetLength: () => {
+    const settings = get().mapSettings;
+    const sizeScale = settings.citySize || 1.0;
+    return (BASE_STREET_SEGMENT_MIN + BASE_STREET_SEGMENT_MAX) / 2 * sizeScale;
+  }
 }));

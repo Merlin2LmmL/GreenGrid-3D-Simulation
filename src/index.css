@@ -29,8 +29,25 @@ body {
 }
 
 .glass-panel {
-  backdrop-filter: blur(10px);
-  background: linear-gradient(145deg, rgba(2, 22, 31, 0.75), rgba(8, 38, 45, 0.35));
-  border: 1px solid rgba(142, 223, 204, 0.25);
-  box-shadow: 0 15px 45px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(16px);
+  background: linear-gradient(145deg, rgba(5, 25, 35, 0.85), rgba(10, 45, 55, 0.45));
+  border: 1px solid rgba(142, 223, 204, 0.2);
+  box-shadow: 
+    0 20px 50px rgba(0, 0, 0, 0.4),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 3px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(52, 211, 153, 0.2);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(52, 211, 153, 0.4);
 }

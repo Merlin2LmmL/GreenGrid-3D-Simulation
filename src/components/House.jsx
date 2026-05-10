@@ -1,7 +1,7 @@
-import { Html, useGLTF, Billboard } from '@react-three/drei';
+import { Html, useGLTF } from '@react-three/drei';
 import { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { LinearFilter, LinearMipmapLinearFilter } from 'three';
+import * as THREE from 'three';
 import { useEnergyStore } from '../store/useEnergyStore';
 import { solarPanelModelPath } from '../config/houseModels';
 
@@ -69,7 +69,7 @@ const cloneSceneWithMaterials = (scene) => {
 const applyTextureQuality = (scene, textureQuality) => {
   if (!scene) return;
   const anisotropy = textureQuality === 'high' ? 8 : textureQuality === 'medium' ? 2 : 1;
-  const minFilter = textureQuality === 'low' ? LinearFilter : LinearMipmapLinearFilter;
+  const minFilter = textureQuality === 'low' ? THREE.LinearFilter : THREE.LinearMipmapLinearFilter;
   scene.traverse((child) => {
     if (!child.material) return;
     const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -80,7 +80,7 @@ const applyTextureQuality = (scene, textureQuality) => {
         if (tex.anisotropy === anisotropy && tex.minFilter === minFilter) return; // already correct
         tex.anisotropy = anisotropy;
         tex.minFilter = minFilter;
-        tex.magFilter = LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
         tex.needsUpdate = true;
       });
     });
@@ -126,75 +126,63 @@ function SolarPanelAttachment({ attachment, panelScene }) {
     </group>
   );
 }
+function HouseLight({ timeHours, position }) {
+  const lightRef = useRef();
+
+  const nightFactor = useMemo(() => {
+    const sunHeight = Math.sin(((timeHours - 6) / 12) * Math.PI);
+    return 1 - THREE.MathUtils.smoothstep(sunHeight, -0.2, 0.1);
+  }, [timeHours]);
+
+  useFrame(({ camera }) => {
+    if (!lightRef.current) return;
+
+    if (nightFactor <= 0) {
+      lightRef.current.intensity = 0;
+      return;
+    }
+
+    // Distance culling removed as requested - lights stay on regardless of camera distance.
+    
+    // Flicker for the light source
+    const t = Date.now() * 0.001;
+    const flicker = Math.sin(t * 1.5) * 0.2 + Math.sin(t * 4) * 0.1;
+    const intensity = (1.2 + flicker) * nightFactor;
+
+    lightRef.current.intensity = intensity * 4;
+  });
+
+  return (
+    <pointLight
+      ref={lightRef}
+      position={[0, 0.15, 0]}
+      distance={20}
+      decay={0.5}
+      color="#fff176"
+      castShadow={false}
+    />
+  );
+}
 
 // ─── House detail (rendered geometry) ────────────────────────────────────────
 
 function HouseDetail({
   house,
   position,
-  modelPath,
-  showPanels,
   showDebugDetails,
   showLabel,
-  labelScaleRef,
   rotation,
   offset,
-  finalScale,
-  solarPanels,
-  panelModelPath,
   DEBUG,
   streetMarkerPosition,
-  textureQuality,
+  timeHours,
+  userScale,
 }) {
   const [isHovered, setIsHovered] = useState(false);
 
-  const gltf = useGLTF(modelPath);
-
-  // ✅ Clone scene ONCE — textureQuality is NOT a dependency here
-  const clonedScene = useMemo(() => {
-    if (!gltf?.scene) return null;
-    return cloneSceneWithMaterials(gltf.scene);
-  }, [gltf]);
-
-  // ✅ Texture quality is applied by mutation, no re-clone needed
-  useEffect(() => {
-    applyTextureQuality(clonedScene, textureQuality);
-  }, [clonedScene, textureQuality]);
-
-  const panelGltf = useGLTF(panelModelPath);
-  const panelScene = showPanels ? panelGltf?.scene || null : null;
-
-  // ✅ Panel texture quality follows the same pattern
-  useEffect(() => {
-    if (!panelGltf?.scene || !showPanels) return;
-    applyTextureQuality(panelGltf.scene, textureQuality);
-  }, [panelGltf, showPanels, textureQuality]);
-
-  useEffect(() => {
-    if (!DEBUG || !clonedScene || !showDebugDetails) return;
-    clonedScene.traverse((child) => {
-      if (child.material) {
-        child.material.opacity = isHovered ? 0.3 : 1.0;
-        child.material.transparent = true;
-        child.material.needsUpdate = true;
-      }
-    });
-  }, [isHovered, clonedScene, DEBUG, showDebugDetails]);
-
-  // Label scale is driven by a ref updated in the parent useFrame — no state needed
-  const [labelScaleState, setLabelScaleState] = useState(1.0);
-  useEffect(() => {
-    if (!showLabel) return;
-    // Sync ref value into state once on mount so the label renders correctly
-    setLabelScaleState(labelScaleRef.current);
-  }, [showLabel]); // eslint-disable-line
-
-  // Update label scale from the ref every frame when label is visible
-  useFrame(() => {
-    if (!showLabel) return;
-    const next = labelScaleRef.current;
-    setLabelScaleState((prev) => (Math.abs(prev - next) > 0.01 ? next : prev));
-  });
+  // No longer needed to update scale every frame manually as distanceFactor 
+  // on the Html component handles distance scaling, and the Billboard's 
+  // scale prop handles the user-defined scale from the dashboard.
 
   return (
     <group position={position}>
@@ -211,75 +199,106 @@ function HouseDetail({
         </mesh>
       )}
 
-      <group rotation={rotation}>
-        <group position={[offset.x, offset.y, offset.z]}>
-          {clonedScene ? (
-            <primitive
-              object={clonedScene}
-              castShadow
-              receiveShadow
-              scale={finalScale}
-              onPointerEnter={showDebugDetails ? () => setIsHovered(true) : undefined}
-              onPointerLeave={showDebugDetails ? () => setIsHovered(false) : undefined}
-            />
-          ) : (
-            <mesh
-              castShadow
-              receiveShadow
-              position={[0, 1.2, 0]}
-              onPointerEnter={showDebugDetails ? () => setIsHovered(true) : undefined}
-              onPointerLeave={showDebugDetails ? () => setIsHovered(false) : undefined}
-            >
-              <boxGeometry args={[3.1, 2.4, 2.8]} />
-              <meshStandardMaterial color="#f1efe5" roughness={0.65} />
-            </mesh>
-          )}
+      {/* 
+          We only keep the light here. 
+          If we have too many houses, we might want to cull these lights by distance too.
+      */}
+      <HouseLight timeHours={timeHours} position={position} />
 
-          {showPanels &&
-            solarPanels.map((attachment, index) => (
-              <SolarPanelAttachment
-                key={`${house.id}-solar-panel-${index}`}
-                attachment={attachment}
-                panelScene={panelScene}
-              />
-            ))}
-        </group>
-      </group>
+      {/* Interaction target for labels/debug - invisible but catches events */}
+      <mesh
+        position={[0, 1.2, 0]}
+        onPointerEnter={showDebugDetails ? () => setIsHovered(true) : undefined}
+        onPointerLeave={showDebugDetails ? () => setIsHovered(false) : undefined}
+        visible={false}
+      >
+        <boxGeometry args={[3.5, 2.5, 3.5]} />
+      </mesh>
 
       {showLabel && (
-        <Billboard position={[0, 4.45, 0]} scale={labelScaleState} renderOrder={-1}>
-          <Html center distanceFactor={20} occlude={false} zIndexRange={[0, 0]} style={{ pointerEvents: 'none' }}>
-            <div className="min-w-[170px] rounded-lg border border-cyan-200/30 bg-slate-900/85 p-2 text-[11px] text-cyan-50 shadow-xl">
+        <group position={[0, 4.45, 0]}>
+          <Html
+            center
+            distanceFactor={20}
+            occlude={false}
+            zIndexRange={[900, 0]}
+            style={{ pointerEvents: 'none' }}
+          >
+            <div 
+              className="min-w-[170px] rounded-lg border border-cyan-200/30 bg-slate-900/85 p-2 text-[11px] text-cyan-50 shadow-xl"
+              style={{ transform: `scale(${userScale})`, transformOrigin: 'bottom center' }}
+            >
               <div className="mb-1 font-semibold tracking-wide text-cyan-100">{house.name}</div>
               {DEBUG && isHovered && (
                 <div className="mb-1 border-b border-cyan-200/20 pb-1 text-[9px] text-cyan-300">
                   <div>🔧 house{house.modelIndex}.glb</div>
                   <div>Scale: {house.customScale?.toFixed(2) || '1.00'}</div>
                   <div>Rotation: {(house.customRotation || 0).toFixed(3)} rad</div>
-                  <div>
-                    Offset: ({offset.x.toFixed(2)}, {offset.y.toFixed(2)}, {offset.z.toFixed(2)})
-                  </div>
                 </div>
               )}
               <div>Verbrauch: {formatNumber(house.consumption)} W</div>
               <div>Produktion: {formatNumber(house.production)} W</div>
-              <div>
-                Batterie: {house.batteryLevel.toFixed(2).replace('.', ',')} /{' '}
-                {house.batteryCapacity.toFixed(1).replace('.', ',')} kWh
-              </div>
+              {house.hasBattery && (
+                <div>
+                  Batterie: {house.batteryLevel.toFixed(2).replace('.', ',')} /{' '}
+                  {house.batteryCapacity.toFixed(1).replace('.', ',')} kWh
+                </div>
+              )}
               <div>
                 Kumulativ: {house.cumulativeBalance >= 0 ? '+' : ''}
                 {house.cumulativeBalance.toFixed(2).replace('.', ',')} €
               </div>
               {(house.buyOrders?.length > 0 || house.sellOrders?.length > 0) && (
-                <div className="mt-1 border-t border-cyan-200/20 pt-1 text-yellow-300">
-                  {house.buyOrders?.length > 0 && <div>🛒 Kauforder: {house.buyOrders.length}</div>}
-                  {house.sellOrders?.length > 0 && <div>📦 Verkauforder: {house.sellOrders.length}</div>}
-              </div>
+                <div className="mt-1 border-t border-cyan-200/20 pt-1 space-y-1">
+                  {house.sellOrders?.map((t, i) => {
+                    const pct = t.totalWh > 0 ? Math.min(100, (t.usedWh / t.totalWh) * 100) : 0;
+                    return (
+                      <div key={`sell-${i}`}>
+                        <div className="flex justify-between text-emerald-300 text-[9px] mb-0.5">
+                          <span>📤 → Haus {String(t.buyerId + 1).padStart(2, '0')}</span>
+                          <span>{t.pricePerKWh.toFixed(3).replace('.', ',')} €/kWh</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <div className="flex-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-emerald-400 transition-all duration-500"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="text-emerald-200 text-[9px] tabular-nums whitespace-nowrap">
+                            {(t.usedWh / 1000).toFixed(2).replace('.', ',')} / {(t.totalWh / 1000).toFixed(2).replace('.', ',')} kWh
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {house.buyOrders?.map((t, i) => {
+                    const pct = t.totalWh > 0 ? Math.min(100, (t.usedWh / t.totalWh) * 100) : 0;
+                    return (
+                      <div key={`buy-${i}`}>
+                        <div className="flex justify-between text-yellow-300 text-[9px] mb-0.5">
+                          <span>📥 ← Haus {String(t.sellerId + 1).padStart(2, '0')}</span>
+                          <span>{t.pricePerKWh.toFixed(3).replace('.', ',')} €/kWh</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <div className="flex-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-yellow-400 transition-all duration-500"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="text-yellow-200 text-[9px] tabular-nums whitespace-nowrap">
+                            {(t.usedWh / 1000).toFixed(2).replace('.', ',')} / {(t.totalWh / 1000).toFixed(2).replace('.', ',')} kWh
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </Html>
-        </Billboard>
+        </group>
       )}
     </group>
   );
@@ -291,30 +310,31 @@ export default function House({ house }) {
   const [x, y, z] = house.position;
   const DEBUG = useEnergyStore((state) => state.DEBUG);
   const showHouseLabels = useEnergyStore((state) => state.showHouseLabels);
+  const timeHours = useEnergyStore((state) => state.timeHours);
 
-  // ✅ Use a ref for the frame counter — no re-render cost
+  // Use a ref for the frame counter — no re-render cost
   const frameRef = useRef(0);
 
-  // ✅ lodLevelRef drives state; state only updates when level actually changes
+  // lodLevelRef drives state; state only updates when level actually changes
   const lodLevelRef = useRef(0);
   const [lodLevel, setLodLevel] = useState(0);
 
-  // ✅ labelScale lives in a ref, updated every frame — consumed by HouseDetail
-  const labelScaleRef = useRef(1.0);
+  const storeLabelScale = useEnergyStore((state) => state.labelScale);
 
   useFrame(({ camera }) => {
-    // ── Label scale (update every frame, no state) ──────────────────────────
     const dx = camera.position.x - x;
     const dy = camera.position.y - (y + 4.45);
     const dz = camera.position.z - z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    labelScaleRef.current = Math.max(2.4, Math.sqrt(dist / 15));
+
+    // ── Label scale ──────────────────────────────────────────────────────────
+    // Removed manual distance scaling as it conflicts with Html distanceFactor
+    // and causes exponential scaling bugs.
 
     // ── LOD (throttled) ─────────────────────────────────────────────────────
     frameRef.current += 1;
     if (frameRef.current % LOD_CHECK_INTERVAL !== 0) return;
 
-    // Reuse dx/dy/dz from above (same camera position)
     const distToHouse = Math.sqrt(
       (camera.position.x - x) ** 2 +
       (camera.position.y - y) ** 2 +
@@ -326,14 +346,9 @@ export default function House({ house }) {
 
     if (lodLevelRef.current !== next) {
       lodLevelRef.current = next;
-      setLodLevel(next); // Only re-renders when level truly changes
+      setLodLevel(next);
     }
   });
-
-  const modelPath = useMemo(() => {
-    const idx = Math.max(0, Math.min(house.modelIndex - 1, HOUSE_MODELS.length - 1));
-    return HOUSE_MODELS[idx];
-  }, [house.modelIndex]);
 
   const rotation = useMemo(
     () => [0, (house.streetFacingRotation || 0) + Math.PI / -2 + (house.customRotation || 0), 0],
@@ -341,9 +356,6 @@ export default function House({ house }) {
   );
 
   const offset = house.offset || { x: 0, y: 0, z: 0 };
-  const finalScale = house.customScale || 1.0;
-  const solarPanels = Array.isArray(house.solarPanels) ? house.solarPanels : [];
-  const panelModelPath = house.solarPanelModelPath || solarPanelModelPath;
 
   const streetMarkerPosition = useMemo(() => {
     const sp = house.streetPoint;
@@ -351,8 +363,6 @@ export default function House({ house }) {
     return [sp[0] - x, 0.16, sp[2] - z];
   }, [house.streetPoint, x, z]);
 
-  // textureQuality derived from lodLevel — only changes on actual LOD transitions
-  const textureQuality = lodLevel === 0 ? 'high' : lodLevel === 1 ? 'medium' : 'low';
   const showLabel = showHouseLabels && lodLevel < 2;
   const showDebugDetails = DEBUG && lodLevel === 0;
 
@@ -360,19 +370,14 @@ export default function House({ house }) {
     <HouseDetail
       house={house}
       position={[x, y, z]}
-      modelPath={modelPath}
-      showPanels={true}
       showDebugDetails={showDebugDetails}
       showLabel={showLabel}
-      labelScaleRef={labelScaleRef}
       rotation={rotation}
       offset={offset}
-      finalScale={finalScale}
-      solarPanels={solarPanels}
-      panelModelPath={panelModelPath}
       DEBUG={DEBUG}
       streetMarkerPosition={streetMarkerPosition}
-      textureQuality={textureQuality}
+      timeHours={timeHours}
+      userScale={storeLabelScale}
     />
   );
 }

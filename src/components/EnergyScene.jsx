@@ -1,25 +1,155 @@
-import { Sky } from '@react-three/drei';
-import { useMemo } from 'react';
+import { Sky, Stars, Clouds as DreiClouds, Cloud as DreiCloud } from '@react-three/drei';
+import { useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
 import House from './House';
 import TradeParticles from './TradeParticles';
+import InstancedRoads from './InstancedRoads';
+import InstancedHouses from './InstancedHouses';
+import InstancedSolarPanels from './InstancedSolarPanels';
+import InstancedWindowLights from './InstancedWindowLights';
 import { useEnergyStore } from '../store/useEnergyStore';
-
 const ROAD_EXTENSION = 2.4;
-
 const DASH_EDGE_MARGIN = 1.3;
 const INTERSECTION_TRIM = 0.8;
-
 const DASH_LENGTH = 1.2;
 const DASH_GAP = 0.72;
 const DASH_PERIOD = DASH_LENGTH + DASH_GAP;
-
 const DASH_WIDTH = 0.18;
 const DASH_HEIGHT = 0.04;
+
+const RAIN_VERTEX_SHADER = `
+  uniform float uTime;
+  attribute float aSpeed;
+  attribute vec3 aInitialPos;
+
+  void main() {
+    vec3 pos = aInitialPos;
+    float yOffset = mod(uTime * aSpeed * 10.0, 40.0);
+    pos.y -= yOffset;
+    if (pos.y < 0.0) pos.y += 40.0;
+    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+    gl_PointSize = 0.15 * (300.0 / -mvPosition.z);
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const RAIN_FRAGMENT_SHADER = `
+  void main() {
+    gl_FragColor = vec4(0.506, 0.831, 0.98, 0.6);
+  }
+`;
+
+function Rain() {
+  const count = 1500;
+  const [positions, speeds] = useMemo(() => {
+    const pos = new Float32Array(count * 3);
+    const spd = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 60;
+      pos[i * 3 + 1] = Math.random() * 40;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 60;
+      spd[i] = 0.2 + Math.random() * 0.3;
+    }
+    return [pos, spd];
+  }, []);
+
+  const uniforms = useMemo(() => ({ uTime: { value: 0 } }), []);
+  useFrame((state) => {
+    uniforms.uTime.value = state.clock.elapsedTime;
+  });
+
+  return (
+    <points>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" count={count} array={positions} itemSize={3} />
+        <bufferAttribute attach="attributes-aInitialPos" count={count} array={positions} itemSize={3} />
+        <bufferAttribute attach="attributes-aSpeed" count={count} array={speeds} itemSize={1} />
+      </bufferGeometry>
+      <shaderMaterial uniforms={uniforms} vertexShader={RAIN_VERTEX_SHADER} fragmentShader={RAIN_FRAGMENT_SHADER} transparent />
+    </points>
+  );
+}
+function Clouds() {
+  const weatherIntensity = useEnergyStore((s) => s.weatherIntensity);
+  const cloudGroup = useRef();
+
+  const cloudData = useMemo(() => {
+    const data = [];
+    const rng = (i) => {
+      let x = Math.sin(i + 456) * 10000;
+      return x - Math.floor(x);
+    };
+
+    // Reduced cloud count for performance, but using instanced DreiClouds
+    for (let i = 0; i < 40; i++) {
+      data.push({
+        id: i,
+        position: [
+          (rng(i * 3) - 0.5) * 250,
+          15 + rng(i * 3 + 1) * 15,
+          (rng(i * 3 + 2) - 0.5) * 250
+        ],
+        speed: 0.1 + rng(i * 7) * 0.2,
+        width: 30 + rng(i * 8) * 60,
+        depth: 0.5 + rng(i * 9) * 2.5,
+        segments: 12, // Fixed segments for consistency
+        baseOpacity: 0.1 + rng(i * 11) * 0.3,
+        driftSpeed: (rng(i * 12) - 0.5) * 0.04,
+        threshold: rng(i * 13)
+      });
+    }
+    return data;
+  }, []);
+
+  useFrame((state) => {
+    if (!cloudGroup.current) return;
+    const t = state.clock.getElapsedTime();
+    cloudGroup.current.position.x = Math.sin(t * 0.01) * 8;
+    cloudGroup.current.position.z = Math.cos(t * 0.01) * 8;
+  });
+
+  const cloudColor = useMemo(() => {
+    const r = 250 - weatherIntensity * 160;
+    const g = 250 - weatherIntensity * 140;
+    const b = 250 - weatherIntensity * 120;
+    return new THREE.Color(`rgb(${Math.floor(r)},${Math.floor(g)},${Math.floor(b)})`);
+  }, [weatherIntensity]);
+
+  return (
+    <group ref={cloudGroup}>
+      <DreiClouds material={THREE.MeshLambertMaterial}>
+        {cloudData.map((cloud) => {
+          const isVisible = weatherIntensity > cloud.threshold * 0.8;
+          if (!isVisible) return null;
+          const opacityMultiplier = 0.4 + weatherIntensity * 1.2;
+
+          return (
+            <DreiCloud
+              key={cloud.id}
+              position={cloud.position}
+              opacity={cloud.baseOpacity * opacityMultiplier}
+              speed={cloud.speed}
+              width={cloud.width}
+              depth={cloud.depth}
+              segments={cloud.segments}
+              color={cloudColor}
+            />
+          );
+        })}
+      </DreiClouds>
+    </group>
+  );
+}
 
 export default function EnergyScene() {
   const houses = useEnergyStore((s) => s.houses);
   const roads = useEnergyStore((s) => s.roads);
   const trades = useEnergyStore((s) => s.trades);
+  const debug = useEnergyStore((s) => s.DEBUG);
+
+  const timeHours = useEnergyStore((s) => s.timeHours);
+  const weather = useEnergyStore((s) => s.weather);
 
   const housesById = useMemo(
     () => new Map(houses.map((h) => [h.id, h])),
@@ -48,32 +178,93 @@ export default function EnergyScene() {
     return Array.from(m.values()).filter((j) => j.entries.length > 1);
   }, [roads]);
 
+  // ── Environment Logic ───────────────────────────────────────────────────
+  const sunPosition = useMemo(() => {
+    // Sun moves along an arc. Sunrise at 6:00, Sunset at 18:00.
+    // We offset the angle so 12:00 is straight up.
+    const normalizedTime = (timeHours - 6) / 12; // 0 at 6am, 1 at 6pm
+    const angle = normalizedTime * Math.PI;
+    const radius = 50;
+    const x = -Math.cos(angle) * radius;
+    const y = Math.sin(angle) * radius; // Peaks at midday
+    const z = -20; 
+    return [x, y, z];
+  }, [timeHours]);
+
+  const weatherIntensity = useEnergyStore((s) => s.weatherIntensity);
+
+  // Smooth daylight factor (0 to 1) based on sun height
+  // Ramps from -0.2 (twilight) to 0.2 (early morning)
+  const sunHeight = sunPosition[1] / 50; // -1 to 1
+  const daylightFactor = useMemo(() => THREE.MathUtils.smoothstep(sunHeight, -0.2, 0.2), [sunHeight]);
+
+  const ambientIntensity = 0.04 + (daylightFactor * (0.56 - weatherIntensity * 0.3));
+  const directIntensity = daylightFactor * (1.6 - weatherIntensity * 1.1);
+
+  const sunColor = useMemo(() => {
+    const nightColor = new THREE.Color('#1a237e');
+    const dayColor = new THREE.Color();
+    const r = 255 - weatherIntensity * 79;
+    const g = 249 - weatherIntensity * 59;
+    const b = 196 + weatherIntensity * 1;
+    dayColor.setRGB(r / 255, g / 255, b / 255);
+    
+    return new THREE.Color().copy(nightColor).lerp(dayColor, daylightFactor);
+  }, [daylightFactor, weatherIntensity]);
+
+  const groundColor = useMemo(() => {
+    const nightGround = new THREE.Color('#1a2a1a');
+    const dayGround = new THREE.Color('#2e7d32');
+    return new THREE.Color().copy(nightGround).lerp(dayGround, daylightFactor);
+  }, [daylightFactor]);
+
+  const citySize = useEnergyStore((s) => s.mapSettings.citySize);
+  const groundSize = useMemo(() => {
+    const avgSegLen = useEnergyStore.getState().getAverageStreetLength();
+    // We scale with a factor of 8.0 to provide generous padding for the 5-7 grid nodes
+    return avgSegLen * 8.0;
+  }, [citySize]);
+
   return (
     <>
       <Sky
-        distance={320}
-        sunPosition={[12, 16, -15]}
-        inclination={0.45}
-        azimuth={0.2}
-        turbidity={10}
-        rayleigh={1.7}
+        distance={450000}
+        sunPosition={sunPosition}
+        inclination={0}
+        azimuth={0.25}
+        turbidity={0.5 + weatherIntensity * 12}
+        rayleigh={1 + weatherIntensity * 2.5}
       />
 
-      <ambientLight intensity={0.35} />
+      <Stars 
+        radius={100} 
+        depth={50} 
+        count={5000} 
+        factor={THREE.MathUtils.smoothstep(1 - daylightFactor, 0.8, 1.0) * 4} 
+        saturation={0} 
+        fade 
+        speed={0.5} 
+      />
+
+      <ambientLight intensity={ambientIntensity} color={sunColor} />
 
       <directionalLight
         castShadow
-        intensity={1.35}
-        position={[14, 18, 7]}
+        intensity={directIntensity}
+        position={sunPosition}
+        color={sunColor}
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
         shadow-camera-near={1}
-        shadow-camera-far={80}
-        shadow-camera-left={-30}
-        shadow-camera-right={30}
-        shadow-camera-top={30}
-        shadow-camera-bottom={-30}
+        shadow-camera-far={100}
+        shadow-camera-left={-50}
+        shadow-camera-right={50}
+        shadow-camera-top={50}
+        shadow-camera-bottom={-50}
       />
+
+      {weatherIntensity === 1.0 && <Rain />}
+      {weatherIntensity > 0 && <Clouds />}
 
       {/* Ground */}
       <mesh
@@ -81,186 +272,22 @@ export default function EnergyScene() {
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, -0.01, 0]}
       >
-        <planeGeometry args={[120, 120]} />
+        <planeGeometry args={[groundSize, groundSize]} />
         <meshStandardMaterial
-          color="#2e7d32"
+          color={groundColor}
           roughness={0.96}
         />
       </mesh>
 
-      {/* Roads */}
-      {roads.map((road) => {
-        const [sx, , sz] = road.start;
-        const [ex, , ez] = road.end;
+      {/* Optimzed Roads */}
+      <InstancedRoads roads={roads} junctions={junctions} />
 
-        const dx = ex - sx;
-        const dz = ez - sz;
+      {/* Optimized House Geometry */}
+      <InstancedHouses houses={houses} />
+      <InstancedSolarPanels houses={houses} />
+      <InstancedWindowLights houses={houses} />
 
-        const length = Math.hypot(dx, dz);
-
-        if (length < 0.001) return null;
-
-        const dirX = dx / length;
-        const dirZ = dz / length;
-
-        const angle = Math.atan2(dx, dz);
-
-        // Extend asphalt into intersections
-        const extStartX = sx - dirX * ROAD_EXTENSION;
-        const extStartZ = sz - dirZ * ROAD_EXTENSION;
-
-        const extEndX = ex + dirX * ROAD_EXTENSION;
-        const extEndZ = ez + dirZ * ROAD_EXTENSION;
-
-        const extLength = length + ROAD_EXTENSION * 2;
-
-        const centerX = (extStartX + extEndX) / 2;
-        const centerZ = (extStartZ + extEndZ) / 2;
-
-        // Trim dashes uniformly near connected intersections
-        const dashStart = road.connectedStart
-          ? INTERSECTION_TRIM
-          : DASH_EDGE_MARGIN;
-
-        const dashEnd = road.connectedEnd
-          ? length - INTERSECTION_TRIM
-          : length - DASH_EDGE_MARGIN;
-
-        // Generate dash centers so each road starts/ends with a gap
-        const usableLength = dashEnd - dashStart;
-        const dashCenters = [];
-
-        if (usableLength > 0) {
-          // Start pattern with a half-gap so there's a gap at the road start
-          let localZ = dashStart + DASH_GAP / 2 + DASH_LENGTH / 2;
-
-          // Push centers while dash fully fits inside the trimmed span
-          while (localZ + DASH_LENGTH / 2 <= dashEnd + 1e-6) {
-            dashCenters.push(localZ);
-            localZ += DASH_PERIOD;
-          }
-        }
-        return (
-          <group key={road.id}>
-            {/* Asphalt */}
-            <mesh
-              receiveShadow
-              position={[centerX, 0.03, centerZ]}
-              rotation={[0, angle, 0]}
-            >
-              <boxGeometry
-                args={[road.width, 0.06, extLength]}
-              />
-
-              <meshStandardMaterial
-                color="#3d4148"
-                roughness={0.9}
-                metalness={0.1}
-              />
-            </mesh>
-
-            {/* Center dashes (aligned globally to avoid seams) */}
-            {dashCenters.map((localZ, i) => {
-              const wx = sx + dirX * localZ;
-              const wz = sz + dirZ * localZ;
-
-              return (
-                <mesh
-                  key={`${road.id}-dash-${i}`}
-                  position={[wx, 0.065, wz]}
-                  rotation={[0, angle, 0]}
-                  renderOrder={20}
-                >
-                  <boxGeometry
-                    args={[DASH_WIDTH, DASH_HEIGHT, DASH_LENGTH]}
-                  />
-
-                  <meshBasicMaterial
-                    color="#f5f5f5"
-                    depthWrite={false}
-                    toneMapped={false}
-                  />
-                </mesh>
-              );
-            })}
-          </group>
-        );
-      })}
-
-      {/* Junction connectors to blend dash patterns at intersections */}
-      {junctions.map((junc, idx) => {
-        const [jx, , jz] = junc.pos;
-
-        return (
-          <group key={`junction-${idx}`} position={[jx, 0, jz]}>
-            {junc.entries.map((entry, eidx) => {
-              const r = entry.road;
-              const [rsx, , rsz] = r.start;
-              const [rex, , rez] = r.end;
-
-              const rdx = rex - rsx;
-              const rdz = rez - rsz;
-              const rlen = Math.hypot(rdx, rdz) || 1;
-              const dirX = rdx / rlen;
-              const dirZ = rdz / rlen;
-
-              // Angle used elsewhere for road rotation (note: atan2(dx, dz))
-              const angle = Math.atan2(rdx, rdz);
-
-              // Compute trimmed dash span for this road (same logic as road render)
-              const dashStart = r.connectedStart ? INTERSECTION_TRIM : DASH_EDGE_MARGIN;
-              const dashEnd = r.connectedEnd ? rlen - INTERSECTION_TRIM : rlen - DASH_EDGE_MARGIN;
-
-              const dashCenters = [];
-              if (dashEnd - dashStart > 0) {
-                let localZ = dashStart + DASH_GAP / 2 + DASH_LENGTH / 2;
-                while (localZ + DASH_LENGTH / 2 <= dashEnd + 1e-6) {
-                  dashCenters.push(localZ);
-                  localZ += DASH_PERIOD;
-                }
-              }
-
-              // Determine whether a dash touches the trimmed intersection area; if so, skip connector
-              const touchesIntersection = dashCenters.some((c) => {
-                // distance from trimmed edge (start or end) depending on which end this junction is
-                if (entry.which === 'start') {
-                  return c - DASH_LENGTH / 2 <= dashStart + 0.001;
-                }
-                // end
-                return c + DASH_LENGTH / 2 >= dashEnd - 0.001;
-              });
-
-              if (touchesIntersection) return null;
-
-              // Place a short oriented rectangle along each incoming road to cover the trimmed dash gap.
-              const offsetAlong = entry.which === 'start' ? INTERSECTION_TRIM * 0.5 : -INTERSECTION_TRIM * 0.5;
-              const localX = dirX * offsetAlong;
-              const localZ = dirZ * offsetAlong;
-
-              // Shrink connector length as junction gets crowded
-              const crowdFactor = Math.max(1, junc.entries.length);
-              const rectLength = INTERSECTION_TRIM * Math.max(0.8, 1.2 - (crowdFactor - 2) * 0.15);
-
-              // Match lateral thickness exactly to dash width so connectors align visually
-              const rectWidth = DASH_WIDTH + 0.001;
-
-              return (
-                <mesh
-                  key={`junction-${idx}-entry-${eidx}`}
-                  position={[localX, 0.066, localZ]}
-                  rotation={[0, angle, 0]}
-                  renderOrder={20}
-                >
-                  <boxGeometry args={[rectWidth, DASH_HEIGHT + 0.001, rectLength]} />
-                  <meshBasicMaterial color="#f5f5f5" depthWrite={false} toneMapped={false} />
-                </mesh>
-              );
-            })}
-          </group>
-        );
-      })}
-
-      {/* Houses */}
+      {/* House Overlays (Labels, Interaction, Individual Lights) */}
       {houses.map((house) => (
         <House
           key={house.id}
@@ -268,11 +295,11 @@ export default function EnergyScene() {
         />
       ))}
 
-      {/* Energy particles */}
+      {/* Electricity trade arcs */}
       <TradeParticles
         trades={trades}
         housesById={housesById}
-  disableParticles={true}
+        roads={roads}
       />
     </>
   );

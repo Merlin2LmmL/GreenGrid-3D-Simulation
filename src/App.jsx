@@ -2,13 +2,15 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { useEffect } from 'react';
 import EnergyScene from './components/EnergyScene';
-import Dashboard from './components/Dashboard';
+import Dashboard, { DebugToolbar, SettingsMenu } from './components/Dashboard';
 import { useEnergyStore } from './store/useEnergyStore';
 
 export default function App() {
   const tick = useEnergyStore((state) => state.tick);
   const tickMs = useEnergyStore((state) => state.tickMs);
   const toggleHouseLabels = useEnergyStore((state) => state.toggleHouseLabels);
+  const toggleDebug = useEnergyStore((state) => state.toggleDebug);
+  const debug = useEnergyStore((state) => state.DEBUG);
 
   useEffect(() => {
     tick();
@@ -21,10 +23,6 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.repeat || event.key.toLowerCase() !== 'h') {
-        return;
-      }
-
       const target = event.target;
       const isTypingField =
         target instanceof HTMLElement &&
@@ -37,8 +35,13 @@ export default function App() {
         return;
       }
 
-      event.preventDefault();
-      toggleHouseLabels();
+      if (event.key.toLowerCase() === 'h') {
+        event.preventDefault();
+        toggleHouseLabels();
+      } else if (event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        toggleDebug();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -56,13 +59,15 @@ export default function App() {
         <OrbitControls
           makeDefault
           minDistance={12}
-          maxDistance={100}
+          maxDistance={200}
           maxPolarAngle={Math.PI / 2.03}
           target={[0, 2, 0]}
         />
       </Canvas>
 
       <Dashboard />
+      <SettingsMenu />
+      <DebugToolbar debug={debug} toggleDebug={toggleDebug} />
     </div>
   );
 }
