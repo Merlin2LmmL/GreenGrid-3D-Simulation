@@ -2,7 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
-  base: '/GreenGrid-3D-Simulation/',
+  // Relative base fixes Pages white-screens by avoiding hardcoded absolute asset URLs.
+  base: './',
   plugins: [react()],
   assetsInclude: ['**/*.gltf', '**/*.glb'],
 });

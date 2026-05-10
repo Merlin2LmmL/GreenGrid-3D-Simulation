@@ -158,7 +158,7 @@ function HouseLight({ timeHours, position }) {
     <pointLight
       ref={lightRef}
       position={[0, 0.15, 0]}
-      distance={8}
+      distance={20}
       decay={0.5}
       color="#fff176"
       castShadow={false}
