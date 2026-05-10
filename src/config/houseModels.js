@@ -4,6 +4,7 @@
  */
 
 export const solarPanelModelPath = `${import.meta.env.BASE_URL}assets/models/solar_panel/solar_panel.glb`;
+const defaultSolarPanelConfig = [];
 
 const degrees = Math.PI / 180
 
@@ -153,7 +154,6 @@ export const modelConfig = {
         rotation: { x: 7 * degrees, y: 0, z: 0 },
         scale: 0.65,
       },
-      ,
       {
         offset: { x: 0.45, y: 3.5, z: -1.8 },
         rotation: { x: 9 * degrees, y: 180 * degrees, z: 0 },
@@ -176,7 +176,7 @@ export const modelConfig = {
 export const getModelConfig = (modelIndex) => {
   const config = modelConfig[modelIndex] || {};
   const solarPanels = Array.isArray(config.solarPanels)
-    ? config.solarPanels.map((panel) => ({
+    ? config.solarPanels.filter(Boolean).map((panel) => ({
         ...panel,
         offset: panel.offset ? { ...panel.offset } : { x: 0, y: 0, z: 0 },
         rotation: panel.rotation ? { ...panel.rotation } : { x: 0, y: 0, z: 0 },
