@@ -41,7 +41,7 @@ const RAIN_FRAGMENT_SHADER = `
 `;
 
 function Rain() {
-  const count = 1500;
+  const count = 600;
   const [positions, speeds] = useMemo(() => {
     const pos = new Float32Array(count * 3);
     const spd = new Float32Array(count);
@@ -82,7 +82,7 @@ function Clouds() {
     };
 
     // Reduced cloud count for performance, but using instanced DreiClouds
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 20; i++) {
       data.push({
         id: i,
         position: [
@@ -93,7 +93,7 @@ function Clouds() {
         speed: 0.1 + rng(i * 7) * 0.2,
         width: 30 + rng(i * 8) * 60,
         depth: 0.5 + rng(i * 9) * 2.5,
-        segments: 12, // Fixed segments for consistency
+        segments: 6, // Reduced segments for performance
         baseOpacity: 0.1 + rng(i * 11) * 0.3,
         driftSpeed: (rng(i * 12) - 0.5) * 0.04,
         threshold: rng(i * 13)
@@ -239,7 +239,7 @@ export default function EnergyScene() {
       <Stars 
         radius={100} 
         depth={50} 
-        count={5000} 
+        count={2500} 
         factor={THREE.MathUtils.smoothstep(1 - daylightFactor, 0.8, 1.0) * 4} 
         saturation={0} 
         fade 
@@ -253,14 +253,14 @@ export default function EnergyScene() {
         intensity={directIntensity}
         position={sunPosition}
         color={sunColor}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
         shadow-camera-near={1}
         shadow-camera-far={100}
-        shadow-camera-left={-50}
-        shadow-camera-right={50}
-        shadow-camera-top={50}
-        shadow-camera-bottom={-50}
+        shadow-camera-left={-35}
+        shadow-camera-right={35}
+        shadow-camera-top={35}
+        shadow-camera-bottom={-35}
       />
 
       {weatherIntensity === 1.0 && <Rain />}
@@ -273,9 +273,8 @@ export default function EnergyScene() {
         position={[0, -0.01, 0]}
       >
         <planeGeometry args={[groundSize, groundSize]} />
-        <meshStandardMaterial
+        <meshLambertMaterial
           color={groundColor}
-          roughness={0.96}
         />
       </mesh>
 

@@ -54,6 +54,7 @@ export default function App() {
         shadows
         camera={{ position: [20, 15, 26], fov: 52 }}
         gl={{ antialias: true }}
+        dpr={[1, 1.5]}
       >
         <EnergyScene />
         <OrbitControls

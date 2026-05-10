@@ -158,7 +158,7 @@ function HouseLight({ timeHours, position }) {
     <pointLight
       ref={lightRef}
       position={[0, 0.15, 0]}
-      distance={20}
+      distance={8}
       decay={0.5}
       color="#fff176"
       castShadow={false}
@@ -324,15 +324,6 @@ export default function House({ house }) {
   const storeLabelScale = useEnergyStore((state) => state.labelScale);
 
   useFrame(({ camera }) => {
-    const dx = camera.position.x - x;
-    const dy = camera.position.y - (y + 4.45);
-    const dz = camera.position.z - z;
-    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-    // ── Label scale ──────────────────────────────────────────────────────────
-    // Removed manual distance scaling as it conflicts with Html distanceFactor
-    // and causes exponential scaling bugs.
-
     // ── LOD (throttled) ─────────────────────────────────────────────────────
     frameRef.current += 1;
     if (frameRef.current % LOD_CHECK_INTERVAL !== 0) return;

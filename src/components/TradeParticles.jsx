@@ -224,8 +224,8 @@ const SPARK_FRAGMENT_SHADER = `
 
 // ── Single electricity arc component ─────────────────────────────────────────
 
-const PARTICLES_PER_ARC = 180;
-const BRANCH_PARTICLES = 40;
+const PARTICLES_PER_ARC = 100;
+const BRANCH_PARTICLES = 20;
 const TOTAL_PARTICLES = PARTICLES_PER_ARC + BRANCH_PARTICLES;
 
 const ElectricityArc = memo(function ElectricityArc({ waypoints, colorIndex = 0, tickMs = 200 }) {
@@ -422,7 +422,7 @@ const ElectricityPathGlow = memo(function ElectricityPathGlow({ waypoints, color
   }, [waypoints]);
 
   const tubeGeometry = useMemo(() => {
-    const segments = Math.max(32, Math.floor(totalLength * 3));
+    const segments = Math.max(20, Math.floor(totalLength * 2));
     return new THREE.TubeGeometry(curve, segments, 0.12, 6, false);
   }, [curve, totalLength]);
 

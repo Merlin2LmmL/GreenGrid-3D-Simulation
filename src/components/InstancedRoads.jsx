@@ -132,11 +132,11 @@ export default function InstancedRoads({ roads, junctions }) {
     <group>
       <instancedMesh ref={asphaltRef} args={[null, null, asphaltMatrices.length]} receiveShadow>
         <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial color="#3d4148" roughness={0.9} metalness={0.1} />
+        <meshLambertMaterial color="#3d4148" />
       </instancedMesh>
       <instancedMesh ref={dashesRef} args={[null, null, dashMatrices.length]} renderOrder={20}>
         <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial color="#f5f5f5" roughness={0.5} metalness={0.1} />
+        <meshLambertMaterial color="#f5f5f5" />
       </instancedMesh>
     </group>
   );
