@@ -2,7 +2,9 @@ import { useMemo, useRef, useLayoutEffect } from 'react';
 import * as THREE from 'three';
 import { useGLTF } from '@react-three/drei';
 
-const HOUSE_MODELS = [1, 2, 3, 4, 5, 6].map((i) => `/assets/models/houses/house${i}.glb`);
+const HOUSE_MODELS = [1, 2, 3, 4, 5, 6].map(
+  (i) => `${import.meta.env.BASE_URL}assets/models/houses/house${i}.glb`,
+);
 
 function ModelInstances({ modelPath, houses }) {
   const { scene } = useGLTF(modelPath);

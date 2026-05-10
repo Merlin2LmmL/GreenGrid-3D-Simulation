@@ -12,7 +12,9 @@ const LOD_FAR_DISTANCE = 95;
 // Only re-check LOD every N frames — saves ~90% of distance calculations
 const LOD_CHECK_INTERVAL = 12;
 
-const HOUSE_MODELS = [1, 2, 3, 4, 5, 6].map((i) => `/assets/models/houses/house${i}.glb`);
+const HOUSE_MODELS = [1, 2, 3, 4, 5, 6].map(
+  (i) => `${import.meta.env.BASE_URL}assets/models/houses/house${i}.glb`,
+);
 HOUSE_MODELS.forEach((path) => useGLTF.preload(path));
 useGLTF.preload(solarPanelModelPath);
 
