@@ -3,7 +3,7 @@
  * Define custom visual parameters for specific house models
  */
 
-export const solarPanelModelPath = '/assets/models/solar_panel/solar_panel.glb';
+export const solarPanelModelPath = `${import.meta.env.BASE_URL}assets/models/solar_panel/solar_panel.glb`;
 
 const degrees = Math.PI / 180
 
