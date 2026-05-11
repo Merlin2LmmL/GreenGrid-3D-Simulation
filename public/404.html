@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Weiterleitung…</title>
+    <script>
+      (function () {
+        const path = window.location.pathname;
+        const lastSegment = path.split('/').pop();
+        const looksLikeFile = /\.[a-z0-9]+$/i.test(lastSegment || '');
+
+        // Keep true file requests on the 404 page (missing assets, etc.)
+        if (looksLikeFile) return;
+
+        const segments = path.split('/').filter(Boolean);
+
+        // For GitHub Pages project deployments, the first segment is the repo name.
+        // Redirect any unknown nested route back to that project root.
+        const projectRoot = segments.length > 0 ? `/${segments[0]}/` : '/';
+
+        const target = new URL(window.location.href);
+        target.pathname = projectRoot;
+
+        if (window.location.pathname !== target.pathname) {
+          window.location.replace(target.href);
+        } else if (!window.location.pathname.endsWith('/')) {
+          target.pathname = `${target.pathname}/`;
+          window.location.replace(target.href);
+        }
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>
