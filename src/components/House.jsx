@@ -247,7 +247,7 @@ function HouseDetail({
                 </div>
               )}
               <div>
-                Kumulativ: {house.cumulativeBalance >= 0 ? '+' : ''}
+                Netto-Gewinn: {house.cumulativeBalance >= 0 ? '+' : ''}
                 {house.cumulativeBalance.toFixed(2).replace('.', ',')} €
               </div>
               {(house.buyOrders?.length > 0 || house.sellOrders?.length > 0) && (
@@ -276,6 +276,19 @@ function HouseDetail({
                   })}
                   {house.buyOrders?.map((t, i) => {
                     const pct = t.totalWh > 0 ? Math.min(100, (t.usedWh / t.totalWh) * 100) : 0;
+                    if (t.isPending) {
+                      return (
+                        <div key={`buy-${i}`}>
+                          <div className="flex justify-between text-orange-300 text-[9px] mb-0.5">
+                            <span>⏳ Kauforder ausstehend</span>
+                            <span>{t.pricePerKWh.toFixed(3).replace('.', ',')} €/kWh</span>
+                          </div>
+                          <div className="text-orange-200/60 text-[8px]">
+                            {(t.totalWh / 1000).toFixed(2).replace('.', ',')} kWh gesucht
+                          </div>
+                        </div>
+                      );
+                    }
                     return (
                       <div key={`buy-${i}`}>
                         <div className="flex justify-between text-yellow-300 text-[9px] mb-0.5">

@@ -4,6 +4,7 @@ import { useEnergyStore } from '../store/useEnergyStore';
 const formatWatt = (value) => `${Math.round(value).toLocaleString('de-DE')} W`;
 const formatPrice = (value) => `${value.toFixed(3).replace('.', ',')} €/kWh`;
 const formatPower = (value) => `${Math.round(value)} W`;
+const formatEuros = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(2).replace('.', ',')} €`;
 const formatWh = (value) => {
   if (value >= 1000) {
     return `${(value / 1000).toFixed(3).replace('.', ',')} kWh`;
@@ -82,6 +83,11 @@ export default function Dashboard() {
           <Metric label="Lokal erzeugt" value={formatWatt(localGenerated)} />
           <Metric label="Netz-Last" value={`${(totals.gridDependency * 100).toFixed(1)}%`} />
           <Metric label="Ø Speicher" value={`${avgBattery.toFixed(1)}%`} />
+          <Metric
+            label="Netto-Gewinn"
+            value={formatEuros(totals.totalCumulativeBalance ?? 0)}
+            variant={(totals.totalCumulativeBalance ?? 0) >= 0 ? 'success' : 'danger'}
+          />
         </div>
 
         {/* Graph Section */}

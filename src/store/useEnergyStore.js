@@ -6,7 +6,7 @@ const DEFAULT_TICK_MS = 200;
 const DEFAULT_SIM_MINUTES_PER_TICK = 5;
 const DEFAULT_SEED = 3;
 const DEFAULT_SOLAR_HOUSE_RATIO = 0.65;
-const DEFAULT_SOLAR_BATTERY_RATIO = 0.85;
+const DEFAULT_SOLAR_BATTERY_RATIO = 0.70;
 const DEFAULT_NO_SOLAR_BATTERY_RATIO = 0.25;
 
 const BASE_STREET_SEGMENT_MIN = 16;
@@ -582,7 +582,9 @@ const tickSimulation = (state) => {
     const isFull = batteryLevel >= house.batteryCapacity * 0.95;
     const safetyReserveWh = house.batteryCapacity * 1000 * (isFull ? 0.1 : BATTERY_THRESHOLD_RATIO);
 
-    const batterySpareWh = house.hasBattery
+    // Only sell battery spare at night — during the day, solar should fill the battery first.
+    // hoursToMorning > 0 means it's nighttime/evening/early morning (sun is not up).
+    const batterySpareWh = house.hasBattery && hoursToMorning > 0
       ? Math.max(0, (batteryLevel * 1000) - (estimatedNightlyNeedWh * 0.8) - safetyReserveWh)
       : 0;
 
@@ -899,8 +901,9 @@ const tickSimulation = (state) => {
 
 
   // ── Step 7: Rebuild buyOrders / sellOrders for dashboard + label display ──────────
-  // Both arrays now reflect *active matched trades* so labels and dashboard can show
-  // kWh delivered, kWh total, trading partner, and locked price.
+  // buyOrders includes both active matched trades and unmatched pending orders so labels
+  // and the dashboard can show trading partner, progress, and pending requests.
+  const pendingOrderByBuyer = new Map(remainingOpenOrders.map((o) => [o.buyerId, o]));
   const houses = Array.from(houseMap.values());
   houses.forEach((house) => {
     house.buyOrders = nextTrades
@@ -911,7 +914,20 @@ const tickSimulation = (state) => {
         usedWh: t.totalWh - t.remainingWh,
         sellerId: t.sellerId,
         pricePerKWh: t.pricePerKWh,
+        isPending: false,
       }));
+    // Append any still-unmatched buy order so the label shows "⏳ awaiting seller"
+    const pendingOrder = pendingOrderByBuyer.get(house.id);
+    if (pendingOrder) {
+      house.buyOrders.push({
+        totalWh: pendingOrder.energyWh,
+        remainingWh: pendingOrder.energyWh,
+        usedWh: 0,
+        sellerId: null,
+        pricePerKWh: pendingOrder.pricePerKWh,
+        isPending: true,
+      });
+    }
     house.sellOrders = nextTrades
       .filter((t) => t.sellerId === house.id)
       .map((t) => ({
@@ -960,6 +976,7 @@ const tickSimulation = (state) => {
       gridRevenue,
       settledMoney,
       totalBatteryDelta,
+      totalCumulativeBalance,
     },
     weatherIntensity,
     targetWeatherIntensity,
