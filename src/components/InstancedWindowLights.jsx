@@ -46,11 +46,15 @@ export default function InstancedWindowLights({ houses }) {
     meshRef.current.visible = nightFactor > 0;
   });
 
+  // Avoid creating an instancedMesh with zero instances
+  if (!houses || houses.length === 0) return null;
+
   return (
     <instancedMesh
+      key={`lights-${houses.length}`}
       ref={meshRef}
       args={[null, null, houses.length]}
-      frustumCulled={false}
+      frustumCulled={true}
     >
       <boxGeometry args={[0.3, 0.3, 0.3]}>
         <instancedBufferAttribute

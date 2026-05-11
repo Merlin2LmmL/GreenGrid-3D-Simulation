@@ -10,7 +10,7 @@ const formatNumber = (value) => Math.round(value).toLocaleString('de-DE');
 const LOD_NEAR_DISTANCE = 55;
 const LOD_FAR_DISTANCE = 95;
 // Only re-check LOD every N frames — saves ~90% of distance calculations
-const LOD_CHECK_INTERVAL = 12;
+const LOD_CHECK_INTERVAL = 15;
 
 const HOUSE_MODELS = [1, 2, 3, 4, 5, 6].map(
   (i) => `${import.meta.env.BASE_URL}assets/models/houses/house${i}.glb`,
@@ -136,7 +136,7 @@ function HouseLight({ timeHours, position }) {
     return 1 - THREE.MathUtils.smoothstep(sunHeight, -0.2, 0.1);
   }, [timeHours]);
 
-  useFrame(({ camera }) => {
+  useFrame(({ clock }) => {
     if (!lightRef.current) return;
 
     if (nightFactor <= 0) {
@@ -144,10 +144,8 @@ function HouseLight({ timeHours, position }) {
       return;
     }
 
-    // Distance culling removed as requested - lights stay on regardless of camera distance.
-    
-    // Flicker for the light source
-    const t = Date.now() * 0.001;
+    // Use clock.elapsedTime for better performance (no Date.now() call)
+    const t = clock.elapsedTime;
     const flicker = Math.sin(t * 1.5) * 0.2 + Math.sin(t * 4) * 0.1;
     const intensity = (1.2 + flicker) * nightFactor;
 
@@ -158,8 +156,8 @@ function HouseLight({ timeHours, position }) {
     <pointLight
       ref={lightRef}
       position={[0, 0.15, 0]}
-      distance={20}
-      decay={0.5}
+      distance={12}
+      decay={0.8}
       color="#fff176"
       castShadow={false}
     />

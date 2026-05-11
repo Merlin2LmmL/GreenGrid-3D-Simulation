@@ -1,5 +1,5 @@
 import { Sky, Stars, Clouds as DreiClouds, Cloud as DreiCloud } from '@react-three/drei';
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, memo, useDeferredValue, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import House from './House';
@@ -41,7 +41,7 @@ const RAIN_FRAGMENT_SHADER = `
 `;
 
 function Rain() {
-  const count = 1500;
+  const count = 1000;
   const [positions, speeds] = useMemo(() => {
     const pos = new Float32Array(count * 3);
     const spd = new Float32Array(count);
@@ -82,7 +82,7 @@ function Clouds() {
     };
 
     // Reduced cloud count for performance, but using instanced DreiClouds
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 28; i++) {
       data.push({
         id: i,
         position: [
@@ -90,24 +90,17 @@ function Clouds() {
           15 + rng(i * 3 + 1) * 15,
           (rng(i * 3 + 2) - 0.5) * 250
         ],
-        speed: 0.1 + rng(i * 7) * 0.2,
+        speed: 0.2 + rng(i * 7) * 0.2,
         width: 30 + rng(i * 8) * 60,
         depth: 0.5 + rng(i * 9) * 2.5,
-        segments: 12, // Fixed segments for consistency
+        segments: 8, // Reduced segments for performance
         baseOpacity: 0.1 + rng(i * 11) * 0.3,
-        driftSpeed: (rng(i * 12) - 0.5) * 0.04,
+        driftSpeed: (rng(i * 12) - 0.5) * 0.2,
         threshold: rng(i * 13)
       });
     }
     return data;
   }, []);
-
-  useFrame((state) => {
-    if (!cloudGroup.current) return;
-    const t = state.clock.getElapsedTime();
-    cloudGroup.current.position.x = Math.sin(t * 0.01) * 8;
-    cloudGroup.current.position.z = Math.cos(t * 0.01) * 8;
-  });
 
   const cloudColor = useMemo(() => {
     const r = 250 - weatherIntensity * 160;
@@ -142,18 +135,73 @@ function Clouds() {
   );
 }
 
+// ─── House Culling (Only render nearby houses to reduce point lights) ────────
+
+const HouseCullGroup = memo(function HouseCullGroup({ houses }) {
+  const cameraRef = useRef({ x: 0, y: 0, z: 0 });
+  const visibleIndicesRef = useRef([]);
+
+  // City regeneration can shrink the array; clear stale indices immediately.
+  useEffect(() => {
+    visibleIndicesRef.current = [];
+  }, [houses]);
+
+  // Track camera position
+  useFrame(({ camera }) => {
+    cameraRef.current.x = camera.position.x;
+    cameraRef.current.y = camera.position.y;
+    cameraRef.current.z = camera.position.z;
+
+    // Calculate visible houses (within 65m of camera)
+    const visible = [];
+    const maxLights = 20; // Hard limit on point lights
+    const cullingDistance = 180;
+
+    for (let i = 0; i < houses.length; i++) {
+      const h = houses[i];
+      const dx = h.position[0] - cameraRef.current.x;
+      const dy = h.position[1] - cameraRef.current.y;
+      const dz = h.position[2] - cameraRef.current.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      if (dist < cullingDistance) {
+        visible.push({ idx: i, dist });
+      }
+    }
+
+    // Sort by distance and keep only the closest maxLights
+    visible.sort((a, b) => a.dist - b.dist);
+    visibleIndicesRef.current = visible.slice(0, maxLights).map(v => v.idx);
+  });
+
+  return (
+    <group>
+      {visibleIndicesRef.current
+        .filter((houseIdx) => houseIdx >= 0 && houseIdx < houses.length)
+        .map((houseIdx) => (
+          <House
+            key={houses[houseIdx].id}
+            house={houses[houseIdx]}
+          />
+        ))}
+    </group>
+  );
+});
+
 export default function EnergyScene() {
   const houses = useEnergyStore((s) => s.houses);
   const roads = useEnergyStore((s) => s.roads);
   const trades = useEnergyStore((s) => s.trades);
   const debug = useEnergyStore((s) => s.DEBUG);
-
   const timeHours = useEnergyStore((s) => s.timeHours);
-  const weather = useEnergyStore((s) => s.weather);
+  
+  // Defer house and road updates to prevent scene thrashing during regeneration
+  const deferredHouses = useDeferredValue(houses);
+  const deferredRoads = useDeferredValue(roads);
 
   const housesById = useMemo(
-    () => new Map(houses.map((h) => [h.id, h])),
-    [houses]
+    () => new Map(deferredHouses.map((h) => [h.id, h])),
+    [deferredHouses]
   );
 
   // Find junctions where multiple roads meet so we can blend dash patterns
@@ -164,7 +212,7 @@ export default function EnergyScene() {
       return `${pos[0].toFixed(3)}_${pos[2].toFixed(3)}`;
     }
 
-    roads.forEach((r) => {
+    deferredRoads.forEach((r) => {
       const sk = keyFor(r.start);
       const ek = keyFor(r.end);
 
@@ -176,26 +224,22 @@ export default function EnergyScene() {
     });
 
     return Array.from(m.values()).filter((j) => j.entries.length > 1);
-  }, [roads]);
+  }, [deferredRoads]);
 
   // ── Environment Logic ───────────────────────────────────────────────────
   const sunPosition = useMemo(() => {
-    // Sun moves along an arc. Sunrise at 6:00, Sunset at 18:00.
-    // We offset the angle so 12:00 is straight up.
-    const normalizedTime = (timeHours - 6) / 12; // 0 at 6am, 1 at 6pm
+    const normalizedTime = (timeHours - 6) / 12;
     const angle = normalizedTime * Math.PI;
     const radius = 50;
     const x = -Math.cos(angle) * radius;
-    const y = Math.sin(angle) * radius; // Peaks at midday
+    const y = Math.sin(angle) * radius;
     const z = -20; 
     return [x, y, z];
   }, [timeHours]);
 
   const weatherIntensity = useEnergyStore((s) => s.weatherIntensity);
 
-  // Smooth daylight factor (0 to 1) based on sun height
-  // Ramps from -0.2 (twilight) to 0.2 (early morning)
-  const sunHeight = sunPosition[1] / 50; // -1 to 1
+  const sunHeight = sunPosition[1] / 50;
   const daylightFactor = useMemo(() => THREE.MathUtils.smoothstep(sunHeight, -0.2, 0.2), [sunHeight]);
 
   const ambientIntensity = 0.04 + (daylightFactor * (0.56 - weatherIntensity * 0.3));
@@ -221,7 +265,6 @@ export default function EnergyScene() {
   const citySize = useEnergyStore((s) => s.mapSettings.citySize);
   const groundSize = useMemo(() => {
     const avgSegLen = useEnergyStore.getState().getAverageStreetLength();
-    // We scale with a factor of 8.0 to provide generous padding for the 5-7 grid nodes
     return avgSegLen * 8.0;
   }, [citySize]);
 
@@ -232,14 +275,14 @@ export default function EnergyScene() {
         sunPosition={sunPosition}
         inclination={0}
         azimuth={0.25}
-        turbidity={0.5 + weatherIntensity * 12}
-        rayleigh={1 + weatherIntensity * 2.5}
+        turbidity={0.5 + weatherIntensity * 10}
+        rayleigh={1 + weatherIntensity * 1.8}
       />
 
       <Stars 
         radius={100} 
         depth={50} 
-        count={5000} 
+        count={3500} 
         factor={THREE.MathUtils.smoothstep(1 - daylightFactor, 0.8, 1.0) * 4} 
         saturation={0} 
         fade 
@@ -253,8 +296,8 @@ export default function EnergyScene() {
         intensity={directIntensity}
         position={sunPosition}
         color={sunColor}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
         shadow-camera-near={1}
         shadow-camera-far={100}
         shadow-camera-left={-50}
@@ -279,27 +322,22 @@ export default function EnergyScene() {
         />
       </mesh>
 
-      {/* Optimzed Roads */}
-      <InstancedRoads roads={roads} junctions={junctions} />
+      {/* Optimized Roads */}
+      <InstancedRoads roads={deferredRoads} junctions={junctions} />
 
       {/* Optimized House Geometry */}
-      <InstancedHouses houses={houses} />
-      <InstancedSolarPanels houses={houses} />
-      <InstancedWindowLights houses={houses} />
+      <InstancedHouses houses={deferredHouses} />
+      <InstancedSolarPanels houses={deferredHouses} />
+      <InstancedWindowLights houses={deferredHouses} />
 
-      {/* House Overlays (Labels, Interaction, Individual Lights) */}
-      {houses.map((house) => (
-        <House
-          key={house.id}
-          house={house}
-        />
-      ))}
+      {/* House Overlays (Labels, Interaction, Individual Lights) - Aggressive culling for mobile */}
+      <HouseCullGroup houses={deferredHouses} />
 
       {/* Electricity trade arcs */}
       <TradeParticles
         trades={trades}
         housesById={housesById}
-        roads={roads}
+        roads={deferredRoads}
       />
     </>
   );

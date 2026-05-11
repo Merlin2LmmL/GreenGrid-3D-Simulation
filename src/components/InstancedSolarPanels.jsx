@@ -1,11 +1,10 @@
-import { useMemo, useRef, useLayoutEffect } from 'react';
+import { useMemo, useRef, useLayoutEffect, memo } from 'react';
 import * as THREE from 'three';
 import { useGLTF } from '@react-three/drei';
 import { solarPanelModelPath } from '../config/houseModels';
 
-function PanelMeshInstances({ meshData, matrices }) {
+const PanelMeshInstances = memo(function PanelMeshInstances({ meshData, matrices }) {
   const meshRef = useRef();
-
   useLayoutEffect(() => {
     if (meshRef.current && matrices.length > 0) {
       matrices.forEach((matrix, i) => {
@@ -16,6 +15,9 @@ function PanelMeshInstances({ meshData, matrices }) {
     }
   }, [matrices]);
 
+  // Avoid rendering instancedMesh with zero instances
+  if (!matrices || matrices.length === 0) return null;
+
   return (
     <instancedMesh
       ref={meshRef}
@@ -25,7 +27,7 @@ function PanelMeshInstances({ meshData, matrices }) {
       receiveShadow
     />
   );
-}
+});
 
 export default function InstancedSolarPanels({ houses }) {
   const { scene } = useGLTF(solarPanelModelPath);
@@ -98,7 +100,11 @@ export default function InstancedSolarPanels({ houses }) {
   return (
     <group>
       {meshData.map((data, idx) => (
-        <PanelMeshInstances key={idx} meshData={data} matrices={matrices} />
+        <PanelMeshInstances 
+          key={`${idx}-${matrices.length}`}
+          meshData={data} 
+          matrices={matrices} 
+        />
       ))}
     </group>
   );

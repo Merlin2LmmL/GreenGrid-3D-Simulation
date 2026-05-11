@@ -1,4 +1,4 @@
-import { useMemo, useRef, useLayoutEffect } from 'react';
+import { useMemo, useRef, useLayoutEffect, memo } from 'react';
 import * as THREE from 'three';
 import { useGLTF } from '@react-three/drei';
 
@@ -6,7 +6,7 @@ const HOUSE_MODELS = [1, 2, 3, 4, 5, 6].map(
   (i) => `${import.meta.env.BASE_URL}assets/models/houses/house${i}.glb`,
 );
 
-function ModelInstances({ modelPath, houses }) {
+const ModelInstances = memo(function ModelInstances({ modelPath, houses }) {
   const { scene } = useGLTF(modelPath);
   
   // Find all meshes in the model
@@ -63,8 +63,9 @@ function ModelInstances({ modelPath, houses }) {
   }, [matrices]);
 
   return (
+    // If there are no houses in this group, avoid creating an instancedMesh with count 0
     <group>
-      {meshData.map((data, idx) => (
+      {houses.length > 0 && meshData.map((data, idx) => (
         <instancedMesh
           key={idx}
           ref={(el) => (instancedMeshesRef.current[idx] = el)}
@@ -76,7 +77,7 @@ function ModelInstances({ modelPath, houses }) {
       ))}
     </group>
   );
-}
+});
 
 export default function InstancedHouses({ houses }) {
   // Group houses by model index
@@ -90,11 +91,15 @@ export default function InstancedHouses({ houses }) {
     return groups;
   }, [houses]);
 
+  // Force recreation of instanced meshes when house count changes significantly
+  // This prevents buffer size mismatches when scaling the city
+  const totalHouseCount = houses.length;
+
   return (
     <group>
       {Object.entries(groupedHouses).map(([modelIndex, housesInGroup]) => (
         <ModelInstances
-          key={modelIndex}
+          key={`${modelIndex}-${totalHouseCount}`}
           modelPath={HOUSE_MODELS[modelIndex - 1]}
           houses={housesInGroup}
         />

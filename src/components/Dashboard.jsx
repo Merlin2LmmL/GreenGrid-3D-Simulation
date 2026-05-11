@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useEnergyStore } from '../store/useEnergyStore';
 
 const formatWatt = (value) => `${Math.round(value).toLocaleString('de-DE')} W`;
@@ -488,6 +488,28 @@ export function SettingsMenu() {
   const [isOpen, setIsOpen] = useState(false);
   const mapSettings = useEnergyStore((s) => s.mapSettings);
   const updateMapSettings = useEnergyStore((s) => s.updateMapSettings);
+  const [pendingSettings, setPendingSettings] = useState(mapSettings);
+  const debounceTimerRef = useRef(null);
+
+  // Debounce updateMapSettings with 600ms delay—gives the browser time to
+  // settle between rapid slider movements and prevents thrashing the scene
+  const debouncedUpdate = (settings) => {
+    setPendingSettings(settings);
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      updateMapSettings(settings);
+    }, 600);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="pointer-events-none fixed right-6 top-6 z-[2000] flex flex-col items-end gap-3">
@@ -514,76 +536,76 @@ export function SettingsMenu() {
           <div className="space-y-6">
             <Slider
               label="Stadt-Größe"
-              value={mapSettings.citySize}
+              value={pendingSettings.citySize}
               min={0.5}
               max={2.5}
               step={0.1}
               unit="x"
-              onChange={(v) => updateMapSettings({ citySize: v })}
+              onChange={(v) => debouncedUpdate({ ...pendingSettings, citySize: v })}
             />
 
             <div className="space-y-2">
               <div className="flex justify-between items-center text-[10px]">
                 <span className="text-emerald-200/70 font-medium">Seed (Zufallswert)</span>
-                <span className="text-emerald-400 font-bold">#{mapSettings.seed}</span>
+                <span className="text-emerald-400 font-bold">#{pendingSettings.seed}</span>
               </div>
               <input
                 type="number"
-                value={mapSettings.seed}
-                onChange={(e) => updateMapSettings({ seed: parseInt(e.target.value) || 1 })}
+                value={pendingSettings.seed}
+                onChange={(e) => debouncedUpdate({ ...pendingSettings, seed: parseInt(e.target.value) || 1 })}
                 className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-emerald-100 focus:outline-none focus:ring-1 focus:ring-emerald-400/50 transition-all"
               />
             </div>
 
             <Slider
               label="Solar-Quote"
-              value={mapSettings.solarRatio}
+              value={pendingSettings.solarRatio}
               min={0}
               max={1}
               step={0.05}
               unit=""
-              valueLabel={`${(mapSettings.solarRatio * 100).toFixed(0)}%`}
-              onChange={(v) => updateMapSettings({ solarRatio: v })}
+              valueLabel={`${(pendingSettings.solarRatio * 100).toFixed(0)}%`}
+              onChange={(v) => debouncedUpdate({ ...pendingSettings, solarRatio: v })}
             />
 
             <div className="pt-2 space-y-4 border-t border-white/5">
               <Slider
                 label="Batterie (mit Solar)"
-                value={mapSettings.solarBatteryRatio}
+                value={pendingSettings.solarBatteryRatio}
                 min={0}
                 max={1}
                 step={0.05}
                 unit=""
-                valueLabel={`${(mapSettings.solarBatteryRatio * 100).toFixed(0)}%`}
-                onChange={(v) => updateMapSettings({ solarBatteryRatio: v })}
+                valueLabel={`${(pendingSettings.solarBatteryRatio * 100).toFixed(0)}%`}
+                onChange={(v) => debouncedUpdate({ ...pendingSettings, solarBatteryRatio: v })}
               />
 
               <Slider
                 label="Batterie (ohne Solar)"
-                value={mapSettings.noSolarBatteryRatio}
+                value={pendingSettings.noSolarBatteryRatio}
                 min={0}
                 max={1}
                 step={0.05}
                 unit=""
-                valueLabel={`${(mapSettings.noSolarBatteryRatio * 100).toFixed(0)}%`}
-                onChange={(v) => updateMapSettings({ noSolarBatteryRatio: v })}
+                valueLabel={`${(pendingSettings.noSolarBatteryRatio * 100).toFixed(0)}%`}
+                onChange={(v) => debouncedUpdate({ ...pendingSettings, noSolarBatteryRatio: v })}
               />
             </div>
 
             <div className="pt-2 space-y-4 border-t border-white/5">
               <Slider
                 label="Wetter-Intensität (Max)"
-                value={mapSettings.maxWeatherIntensity}
+                value={pendingSettings.maxWeatherIntensity}
                 min={0}
                 max={2.0}
                 step={0.1}
                 unit="x"
-                onChange={(v) => updateMapSettings({ maxWeatherIntensity: v })}
+                onChange={(v) => debouncedUpdate({ ...pendingSettings, maxWeatherIntensity: v })}
               />
             </div>
 
             <button
-              onClick={() => updateMapSettings({ seed: Math.floor(Math.random() * 10000) })}
+              onClick={() => debouncedUpdate({ ...pendingSettings, seed: Math.floor(Math.random() * 10000) })}
               className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-all shadow-lg active:scale-[0.98]"
             >
               Neu Generieren 🎲

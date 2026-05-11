@@ -466,6 +466,24 @@ const hoursUntilNextSunrise = (timeHours) => {
 };
 
 const tickSimulation = (state) => {
+  // Guard against invalid state during transitions
+  if (!state || !state.houses || !Array.isArray(state.houses)) {
+    return state; // Return unchanged state if invalid
+  }
+  if (!Number.isFinite(state.simMinutesPerTick)) {
+    return state;
+  }
+  
+  // Validate houses have required properties (they might be regenerating)
+  if (state.houses.some(h => 
+    !h || 
+    typeof h.position !== 'object' || h.position.length !== 3 ||
+    typeof h.baseConsumption !== 'number' ||
+    typeof h.pvPeak !== 'number'
+  )) {
+    return state;
+  }
+  
   const now = Date.now();
   const tickHours = state.simMinutesPerTick / 60;
   const nextTime = (state.timeHours + tickHours) % 24;
@@ -1007,7 +1025,16 @@ export const useEnergyStore = create((set, get) => ({
 
   tick: () => {
     if (get().isPaused) return;
-    set((state) => tickSimulation(state));
+    try {
+      const state = get();
+      // Ensure all required fields exist before ticking
+      if (!state.houses || !Array.isArray(state.houses)) return;
+      if (!state.simMinutesPerTick || !Number.isFinite(state.simMinutesPerTick)) return;
+      set((s) => tickSimulation(s));
+    } catch (error) {
+      console.error('Tick error:', error);
+      // Silently catch—don't crash the app, just skip this tick
+    }
   },
 
   toggleHouseLabels: () => {
@@ -1017,8 +1044,12 @@ export const useEnergyStore = create((set, get) => ({
   },
 
   reset: () => {
+    const wasPaused = get().isPaused;
+    set((state) => ({ ...state, isPaused: true }));
+
     const city = createCityLayout(get().mapSettings);
-    set({
+    set((state) => ({
+      ...state,
       houses: city.houses,
       roads: city.roads,
       trades: [],
@@ -1026,8 +1057,8 @@ export const useEnergyStore = create((set, get) => ({
       history: [],
       timeHours: 7,
       dayCount: 0,
-    });
-    get().tick();
+      isPaused: wasPaused,
+    }));
   },
 
   setSeed: (seed) => {
@@ -1046,21 +1077,27 @@ export const useEnergyStore = create((set, get) => ({
   toggleDebug: () => set((s) => ({ DEBUG: !s.DEBUG })),
 
   updateMapSettings: (newSettings) => {
-    set((state) => {
-      const updatedSettings = { ...state.mapSettings, ...newSettings };
-      const city = createCityLayout(updatedSettings);
-      return {
-        mapSettings: updatedSettings,
-        houses: city.houses,
-        roads: city.roads,
-        trades: [],
-        openBuyOrders: [],
-        history: [],
-        timeHours: 7,
-        dayCount: 0,
-      };
-    });
-    get().tick();
+    // Temporarily pause to avoid tick() running mid-regeneration
+    const wasPaused = get().isPaused;
+    set((state) => ({ ...state, isPaused: true }));
+
+    // Regenerate city synchronously (safer than async)
+    const updatedSettings = { ...get().mapSettings, ...newSettings };
+    const city = createCityLayout(updatedSettings);
+
+    // Update store with new city, then resume
+    set((state) => ({
+      ...state,
+      mapSettings: updatedSettings,
+      houses: city.houses,
+      roads: city.roads,
+      trades: [],
+      openBuyOrders: [],
+      history: [],
+      timeHours: 7,
+      dayCount: 0,
+      isPaused: wasPaused, // Resume to previous state
+    }));
   },
 
   getAverageStreetLength: () => {

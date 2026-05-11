@@ -12,14 +12,21 @@ export default function App() {
   const toggleDebug = useEnergyStore((state) => state.toggleDebug);
   const debug = useEnergyStore((state) => state.DEBUG);
 
+  // Detect mobile device for canvas optimization
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  const dpr = isMobile ? Math.min(window.devicePixelRatio, 1.5) : window.devicePixelRatio;
+
   useEffect(() => {
-    tick();
+    // Call the store tick directly via getState so the interval
+    // is stable across store updates (avoids tick function identity
+    // causing the effect to rerun and briefly stop updates).
+    useEnergyStore.getState().tick();
     const id = setInterval(() => {
-      tick();
+      useEnergyStore.getState().tick();
     }, tickMs);
 
     return () => clearInterval(id);
-  }, [tick, tickMs]);
+  }, [tickMs]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -53,7 +60,8 @@ export default function App() {
       <Canvas
         shadows
         camera={{ position: [20, 15, 26], fov: 52 }}
-        gl={{ antialias: true }}
+        gl={{ antialias: !isMobile, dpr, powerPreference: 'high-performance' }}
+        dpr={dpr}
       >
         <EnergyScene />
         <OrbitControls

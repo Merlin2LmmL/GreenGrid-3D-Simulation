@@ -471,7 +471,8 @@ const ElectricityPathGlow = memo(function ElectricityPathGlow({ waypoints, color
 // ── Main export ──────────────────────────────────────────────────────────────
 
 // Minimum delivery threshold (W) for a trade to show visuals
-const MIN_VISIBLE_DELIVERY_W = 10;
+const MIN_VISIBLE_DELIVERY_W = 50;
+const MAX_VISIBLE_TRADES = 8;
 
 // Simple stable hash for strings
 const getHash = (str) => {
@@ -539,7 +540,7 @@ export default function TradeParticles({ trades, housesById, roads }) {
       }
     }
 
-    return activePaths;
+    return activePaths.slice(0, MAX_VISIBLE_TRADES);
   }, [trades, housesById, roadGraph]);
 
   if (tradePaths.length === 0) return null;
